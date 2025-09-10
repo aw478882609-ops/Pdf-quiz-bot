@@ -36,11 +36,24 @@ module.exports = async (req, res) => {
 
                 if (questions.length > 0) {
                     for (const q of questions) {
-                        await bot.sendPoll(chatId, q.question, q.options, {
-                            type: 'quiz',
-                            correct_option_id: q.correctAnswerIndex,
-                            is_anonymous: false
-                        });
+                        // التحقق من طول السؤال
+                        if (q.question.length > 255) {
+                            // إرسال السؤال كنص عادي
+                            await bot.sendMessage(chatId, q.question);
+                            // ثم إرسال الخيارات كاستطلاع برأس قصير
+                            await bot.sendPoll(chatId, '.', q.options, {
+                                type: 'quiz',
+                                correct_option_id: q.correctAnswerIndex,
+                                is_anonymous: false
+                            });
+                        } else {
+                            // إرسال الاستطلاع برأس السؤال الكامل
+                            await bot.sendPoll(chatId, q.question, q.options, {
+                                type: 'quiz',
+                                correct_option_id: q.correctAnswerIndex,
+                                is_anonymous: false
+                            });
+                        }
                     }
                 } else {
                     await bot.sendMessage(chatId, 'لم أتمكن من العثور على أي أسئلة في الملف.');
@@ -71,8 +84,6 @@ function extractQuestions(text) {
         /^(.+):$/
     ];
     const optionPatterns = [
-        /^\s*([A-Z])\s+(.+)/i, // النمط الجديد: يدعم حرف يليه مسافة (A Text)
-        /^\s*(\d+)\s+(.+)/,     // النمط الجديد: يدعم رقم يليه مسافة (1 Text)
         /^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i,
         /^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/,
         /^\s*\[([A-Z])\]\s*(.+)/i,
