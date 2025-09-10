@@ -65,10 +65,11 @@ function extractQuestions(text) {
     let i = 0;
 
     // أنماط البحث
-    const titleRegex = /^\d+\.\s(.+)/;
-    const questionTextRegex = /^(What|Which|Who|How|When|Where) (.+?\??)/i;
-    const optionRegex = /^[A-D]\)\s(.+)/;
-    const answerRegex = /^(Answer|Correct Answer|Solution):?\s*([A-D]\))\s*(.+)/i;
+    // أنماط البحث
+const titleRegex = /^\d+\.\s(.+)/;
+const questionTextRegex = /^(What|Which|Who|How|When|Where) (.+)/i;
+const optionRegex = /^[A-D]\)\s(.+)/;
+const answerRegex = /^(Answer|Correct Answer|Solution):?\s*([A-D]\))\s*(.+)/i;
 
     while (i < lines.length) {
         const line = lines[i];
