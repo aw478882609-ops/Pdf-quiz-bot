@@ -1,5 +1,4 @@
-
-// api/index.js
+// api/index.js (The full, updated file)
 
 const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
@@ -64,56 +63,88 @@ function extractQuestions(text) {
     let currentQuestion = null;
     let i = 0;
 
-    // أنماط البحث
-    // أنماط البحث
-const titleRegex = /^\d+\.\s(.+)/;
-const questionTextRegex = /^(What|Which|Who|How|When|Where) (.+)/i;
-const optionRegex = /^[A-D]\)\s(.+)/;
-const answerRegex = /^(Answer|Correct Answer|Solution):?\s*([A-D]\))\s*(.+)/i;
-
+    // أنماط البحث الشاملة للخيارات والإجابات
+    const questionKeywords = /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)/i;
+    const optionPatterns = [
+        /^[A-Z]\)\s*(.+)/,
+        /^[A-Z]\.\s*(.+)/,
+        /^\d+\)\s*(.+)/,
+        /^\d+\.\s*(.+)/,
+        /^\[[A-Z]\]\s*(.+)/,
+        /^\(\s*([A-Z])\s*\)\s*(.+)/
+    ];
+    const answerPatterns = [
+        /^(Answer|Correct Answer|Solution):?\s*([A-Z]|\d)\s*\)?\s*(.+)?/i,
+        /^\s*([A-Z])\s*\)\s*(.+?)\s*$/, // for answers like "B) Text" on a new line
+        /^\s*\d+\.\s*(.+?)\s*$/ // for answers like "2. Text" on a new line
+    ];
+    
     while (i < lines.length) {
         const line = lines[i];
+        let questionText = null;
+        
+        // 1. البحث عن السؤال
+        // الحالة الأولى: السؤال يبدأ برقم وعنوان ثم جملة السؤال
+        const titleMatch = line.match(/^\d+\.\s(.+)/);
+        if (titleMatch && i + 1 < lines.length && questionKeywords.test(lines[i + 1])) {
+            questionText = lines[i + 1];
+            i++;
+        }
+        // الحالة الثانية: السؤال يبدأ مباشرة بكلمة استفهام
+        else if (questionKeywords.test(line)) {
+            questionText = line;
+        }
 
-        // البحث عن سطر العنوان
-        const titleMatch = line.match(titleRegex);
-        if (titleMatch) {
-            // التحقق من أن السطر التالي هو السؤال الفعلي
-            if (i + 1 < lines.length && lines[i + 1].match(questionTextRegex)) {
-                if (currentQuestion) {
-                    if (currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
-                        questions.push(currentQuestion);
+        if (questionText) {
+            if (currentQuestion && currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
+                questions.push(currentQuestion);
+            }
+            
+            currentQuestion = {
+                question: questionText.trim(),
+                options: [],
+                correctAnswerIndex: undefined
+            };
+
+            // 2. البحث عن الخيارات
+            let j = i + 1;
+            while (j < lines.length) {
+                let matchedOption = false;
+                for (const pattern of optionPatterns) {
+                    const optionMatch = lines[j].match(pattern);
+                    if (optionMatch) {
+                        currentQuestion.options.push(optionMatch[1].trim());
+                        matchedOption = true;
+                        break;
                     }
                 }
-                
-                // بدء سؤال جديد
-                const questionLine = lines[i + 1];
-                const questionTextMatch = questionLine.match(questionTextRegex);
-                currentQuestion = {
-                    question: questionTextMatch[0].trim(),
-                    options: [],
-                    correctAnswerIndex: undefined
-                };
-                
-                // البحث عن الخيارات
-                let j = i + 2;
-                while (j < lines.length && lines[j].match(optionRegex)) {
-                    const optionMatch = lines[j].match(optionRegex);
-                    currentQuestion.options.push(optionMatch[1].trim());
-                    j++;
-                }
-                i = j - 1; // تحديث مؤشر السطر
+                if (!matchedOption) break;
+                j++;
+            }
+            i = j - 1;
 
-                // البحث عن الإجابة
-                if (i + 1 < lines.length) {
-                    const answerLine = lines[i + 1];
-                    const answerMatch = answerLine.match(answerRegex);
+            // 3. البحث عن الإجابة
+            if (i + 1 < lines.length) {
+                for (const pattern of answerPatterns) {
+                    const answerMatch = lines[i + 1].match(pattern);
                     if (answerMatch) {
-                        const correctOptionLetter = answerMatch[2].charAt(0).toUpperCase();
-                        const correctIndex = correctOptionLetter.charCodeAt(0) - 'A'.charCodeAt(0);
-                        if (correctIndex >= 0 && correctIndex < currentQuestion.options.length) {
+                        const answerText = (answerMatch[3] || answerMatch[2] || answerMatch[1]).trim();
+                        const correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === answerText.toLowerCase());
+                        if (correctIndex !== -1) {
                             currentQuestion.correctAnswerIndex = correctIndex;
+                        } else {
+                            // محاولة مطابقة الإجابة بناءً على الحرف فقط (مثال: B)
+                            const letterMatch = answerText.match(/^[A-Z]\)/i);
+                            if (letterMatch) {
+                                const letter = letterMatch[0].charAt(0).toUpperCase();
+                                const index = letter.charCodeAt(0) - 'A'.charCodeAt(0);
+                                if (index >= 0 && index < currentQuestion.options.length) {
+                                    currentQuestion.correctAnswerIndex = index;
+                                }
+                            }
                         }
                         i++;
+                        break;
                     }
                 }
             }
@@ -124,7 +155,6 @@ const answerRegex = /^(Answer|Correct Answer|Solution):?\s*([A-D]\))\s*(.+)/i;
     if (currentQuestion && currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
         questions.push(currentQuestion);
     }
-
     return questions;
 }
 
