@@ -100,21 +100,33 @@ function extractQuestions(text) {
         }
         return null;
     }
+    
+    function isOptionOrAnswer(line) {
+        return findMatch(line, optionPatterns) || findMatch(line, answerPatterns);
+    }
 
     while (i < lines.length) {
         const line = lines[i];
-        let questionText = null;
+        let questionText = '';
         
         const questionMatch = findMatch(line, questionPatterns);
         if (questionMatch) {
+            // التحقق من وجود سطر عنوان يليه سطر سؤال
+            const numberedTitleMatch = findMatch(line, [questionPatterns[1]]);
+            if (numberedTitleMatch && i + 1 < lines.length && findMatch(lines[i + 1], questionPatterns)) {
+                questionText = lines[i + 1].trim();
+                i++;
+            } else {
+                questionText = line.trim();
+            }
+
             if (currentQuestion && currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
                 questions.push(currentQuestion);
             }
             
-            questionText = questionMatch[0].trim();
-            
+            // دمج الأسطر المتعددة
             let j = i + 1;
-            while (j < lines.length && !findMatch(lines[j], questionPatterns) && !findMatch(lines[j], optionPatterns)) {
+            while (j < lines.length && !findMatch(lines[j], questionPatterns) && !isOptionOrAnswer(lines[j])) {
                 questionText += ' ' + lines[j].trim();
                 j++;
             }
@@ -126,6 +138,7 @@ function extractQuestions(text) {
                 correctAnswerIndex: undefined
             };
 
+            // البحث عن الخيارات
             j = i + 1;
             while (j < lines.length) {
                 const optionMatch = findMatch(lines[j], optionPatterns);
@@ -138,6 +151,7 @@ function extractQuestions(text) {
             }
             i = j - 1;
 
+            // البحث عن الإجابة
             if (i + 1 < lines.length) {
                 const answerMatch = findMatch(lines[i + 1], answerPatterns);
                 if (answerMatch) {
