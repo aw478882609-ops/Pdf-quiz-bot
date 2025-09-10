@@ -1,4 +1,4 @@
-// api/index.js
+// api/index.js (Full, corrected file)
 
 const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
@@ -6,7 +6,7 @@ const axios = require('axios');
 const micro = require('micro');
 
 // استخدام المتغير البيئي لـ Token
-const token = process.env.TELEGRAM_BOT_TOKEN;
+const token = process.env.sTELEGRAM_BOT_TOKEN;
 const bot = new TelegramBot(token);
 
 module.exports = async (req, res) => {
@@ -63,20 +63,17 @@ function extractQuestions(text) {
     let currentQuestion = null;
     let i = 0;
 
-    // أنماط البحث الشاملة للأسئلة
     const questionPatterns = [
         /^\s*(q|question)\s*\d+\s*[:\s-]?\s*(.+)/i,
         /^\d+\.\s(.+)/,
         /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)\s(.+)/i
     ];
-
     const optionPatterns = [
         /^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i,
         /^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/,
         /^\s*\[([A-Z])\]\s*(.+)/i,
         /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i
     ];
-    // أنماط شاملة للإجابات
     const answerPatterns = [
         /^(Answer|Correct Answer|Solution|Ans|Sol):?\s*([A-Z]|\d)\s*[\)\.\/\-_\^&@':;"\\]?\s*(.+)?/i,
         /^\s*([A-Z])\s*[\)\.\/\-_\^&@':;"\\]\s*(.+?)\s*$/i,
@@ -99,7 +96,8 @@ function extractQuestions(text) {
         
         const questionMatch = findMatch(line, questionPatterns);
         if (questionMatch) {
-            questionText = questionMatch[2] ? questionMatch[2].trim() : questionMatch[1].trim();
+            // استخدام match[0] لالتقاط السطر كاملا
+            questionText = questionMatch[0].trim();
 
             if (currentQuestion && currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
                 questions.push(currentQuestion);
