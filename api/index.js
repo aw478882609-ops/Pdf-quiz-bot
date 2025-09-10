@@ -60,22 +60,28 @@ module.exports = async (req, res) => {
 function extractQuestions(text) {
     const rules = [
         {
+            name: "Numbered Questions with Lettered Options (A), B)) and Answer Key",
+            questionRegex: /^\d+\.\s(.+?)(?=\n|$)/,
+            optionRegex: /^[A-D]\)\s(.+)/,
+            answerRegex: /^(Answer|Correct Answer|Solution):?\s*([A-D]\))\s*(.+)/i
+        },
+        {
             name: "Numbered Questions with Lettered Options (A., B.) and Answer Key",
             questionRegex: /^\d+\.\s(.+?)(?=\n|$)/,
             optionRegex: /^[A-D]\.\s(.+)/,
-            answerRegex: /^(Correct Answer|Answer|Solution):?\s*(.+)/i
+            answerRegex: /^(Answer|Correct Answer|Solution):?\s*(.+)/i
         },
         {
             name: "Numbered Questions with Numbered Options (1., 2.) and Answer Key",
             questionRegex: /^\d+\.\s(.+?)(?=\n|$)/,
             optionRegex: /^\d+\.\s(.+)/,
-            answerRegex: /^(Correct Answer|Answer|Solution):?\s*(.+)/i
+            answerRegex: /^(Answer|Correct Answer|Solution):?\s*(.+)/i
         },
         {
             name: "Questions with Question Words (What, Which, Who, etc.)",
             questionRegex: /^(What|Which|Who|How|When|Where) (.+?\??)(?=\n|$)/,
             optionRegex: /^\d+\.\s(.+)/,
-            answerRegex: /^(Correct Answer|Answer|Solution):?\s*(.+)/i
+            answerRegex: /^(Answer|Correct Answer|Solution):?\s*(.+)/i
         }
     ];
 
@@ -86,10 +92,63 @@ function extractQuestions(text) {
                 return questions;
             }
         } catch (e) {
-            console.error(`Parsing with rule "${rule.name}" failed: ${e.message}`);
+            console.error(`فشل التحليل باستخدام القاعدة "${rule.name}": ${e.message}`);
         }
     }
     return [];
+}
+
+// دالة parseTextWithRule هي نفسها لم تتغير
+function parseTextWithRule(text, rule) {
+    const questions = [];
+    const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+    let currentQuestion = null;
+    let i = 0;
+    while (i < lines.length) {
+        const line = lines[i];
+        const questionMatch = line.match(rule.questionRegex);
+        if (questionMatch) {
+            if (currentQuestion) {
+                if (currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
+                    questions.push(currentQuestion);
+                }
+            }
+            currentQuestion = {
+                question: questionMatch[1].trim(),
+                options: [],
+                correctAnswerIndex: undefined
+            };
+            let j = i + 1;
+            while (j < lines.length && lines[j].match(rule.optionRegex)) {
+                const optionMatch = lines[j].match(rule.optionRegex);
+                currentQuestion.options.push(optionMatch[1].trim());
+                j++;
+            }
+            i = j - 1;
+            if (i + 1 < lines.length) {
+                const nextLine = lines[i + 1];
+                const answerMatch = nextLine.match(rule.answerRegex);
+                if (answerMatch) {
+                    let answerText;
+                    if (answerMatch[3]) { // This handles "Answer: B) text"
+                        answerText = answerMatch[3].trim();
+                    } else { // This handles "Answer: text"
+                        answerText = answerMatch[2].trim();
+                    }
+                    const correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === answerText.toLowerCase());
+                    if (correctIndex !== -1) {
+                        currentQuestion.correctAnswerIndex = correctIndex;
+                    }
+                    i++;
+                }
+            }
+        }
+        i++;
+    }
+    if (currentQuestion && currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
+        questions.push(currentQuestion);
+    }
+    return questions;
 }
 
 function parseTextWithRule(text, rule) {
