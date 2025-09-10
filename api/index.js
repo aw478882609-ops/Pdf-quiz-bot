@@ -66,7 +66,9 @@ function extractQuestions(text) {
     const questionPatterns = [
         /^\s*(q|question)\s*\d+\s*[:\s-]?\s*(.+)/i,
         /^\d+\.\s(.+)/,
-        /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)\s(.+)/i
+        /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)\s(.+)/i,
+        /^(.+)\?$/,
+        /^(.+):$/
     ];
     const optionPatterns = [
         /^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i,
@@ -96,7 +98,6 @@ function extractQuestions(text) {
         
         const questionMatch = findMatch(line, questionPatterns);
         if (questionMatch) {
-            // استخدام match[0] لالتقاط السطر كاملا
             questionText = questionMatch[0].trim();
 
             if (currentQuestion && currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
