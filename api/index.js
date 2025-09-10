@@ -5,6 +5,7 @@ const pdf = require('pdf-parse');
 const axios = require('axios');
 const micro = require('micro');
 
+// استخدام المتغير البيئي لـ Token
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const bot = new TelegramBot(token);
 
@@ -71,7 +72,7 @@ function extractQuestions(text) {
     let currentQuestion = null;
     let i = 0;
 
-    const questionStartPatterns = [
+    const questionPatterns = [
         /^\s*(q|question)\s*\d+\s*[:\s-]?\s*(.+)/i,
         /^\d+\.\s(.+)/,
         /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)\s(.+)/i,
@@ -99,26 +100,21 @@ function extractQuestions(text) {
         }
         return null;
     }
-    
-    function isOptionOrAnswer(line) {
-        return findMatch(line, optionPatterns) || findMatch(line, answerPatterns);
-    }
 
     while (i < lines.length) {
         const line = lines[i];
-        let questionText = '';
+        let questionText = null;
         
-        const questionStartMatch = findMatch(line, questionStartPatterns);
-        if (questionStartMatch) {
+        const questionMatch = findMatch(line, questionPatterns);
+        if (questionMatch) {
             if (currentQuestion && currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
                 questions.push(currentQuestion);
             }
-
-            questionText = questionStartMatch[0].trim();
             
-            // دمج الأسطر المتعددة للسؤال
+            questionText = questionMatch[0].trim();
+            
             let j = i + 1;
-            while (j < lines.length && !findMatch(lines[j], questionStartPatterns) && !isOptionOrAnswer(lines[j])) {
+            while (j < lines.length && !findMatch(lines[j], questionPatterns) && !findMatch(lines[j], optionPatterns)) {
                 questionText += ' ' + lines[j].trim();
                 j++;
             }
@@ -130,7 +126,6 @@ function extractQuestions(text) {
                 correctAnswerIndex: undefined
             };
 
-            // البحث عن الخيارات
             j = i + 1;
             while (j < lines.length) {
                 const optionMatch = findMatch(lines[j], optionPatterns);
@@ -143,7 +138,6 @@ function extractQuestions(text) {
             }
             i = j - 1;
 
-            // البحث عن الإجابة
             if (i + 1 < lines.length) {
                 const answerMatch = findMatch(lines[i + 1], answerPatterns);
                 if (answerMatch) {
