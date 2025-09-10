@@ -68,14 +68,10 @@ module.exports = async (req, res) => {
 
 function extractQuestions(text) {
     const questions = [];
-    const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+    const lines = text.split('\n');
     let i = 0;
 
-    const titlePatterns = [
-        /^[A-Z\s]+$/, // Titles in all caps
-        /^[IVX]+\.\s/ // Roman numeral titles
-    ];
-    const questionStartPatterns = [
+    const questionPatterns = [
         /^\s*(q|question)\s*\d+\s*[:\s-]?\s*(.+)/i,
         /^\d+\.\s(.+)/,
         /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)\s(.+)/i,
@@ -86,7 +82,9 @@ function extractQuestions(text) {
         /^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i,
         /^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/,
         /^\s*\[([A-Z])\]\s*(.+)/i,
-        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i
+        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i,
+        /^\s*([A-Z])\s+(.+)/i,
+        /^\s*(\d+)\s+(.+)/
     ];
     const answerPatterns = [
         /^(Answer|Correct Answer|Solution|Ans|Sol):?\s*([A-Z]|\d)\s*[\)\.\/\-_\^&@':;"\\]?\s*(.+)?/i,
@@ -103,34 +101,32 @@ function extractQuestions(text) {
         }
         return null;
     }
-    
-    function isOptionOrAnswer(line) {
-        return findMatch(line, optionPatterns) || findMatch(line, answerPatterns);
-    }
 
     while (i < lines.length) {
-        const line = lines[i];
-        let questionText = '';
-        
-        const isTitleLine = findMatch(line, titlePatterns);
-        const questionMatch = findMatch(line, questionStartPatterns);
-
-        if (isTitleLine) {
+        const line = lines[i].trim();
+        if (line.length === 0) {
             i++;
             continue;
         }
 
+        let questionText = null;
+        
+        const questionMatch = findMatch(line, questionPatterns);
         if (questionMatch) {
+            if (currentQuestion && currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
+                questions.push(currentQuestion);
+            }
+            
             questionText = questionMatch[0].trim();
             
             let j = i + 1;
-            while (j < lines.length && !findMatch(lines[j], questionStartPatterns) && !isOptionOrAnswer(lines[j]) && lines[j].length > 0) {
+            while (j < lines.length && lines[j].trim().length > 0 && !findMatch(lines[j], optionPatterns) && !findMatch(lines[j], answerPatterns) && !findMatch(lines[j], questionPatterns)) {
                 questionText += ' ' + lines[j].trim();
                 j++;
             }
             i = j - 1;
 
-            const currentQuestion = {
+            currentQuestion = {
                 question: questionText,
                 options: [],
                 correctAnswerIndex: undefined
