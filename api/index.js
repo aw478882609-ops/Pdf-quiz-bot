@@ -1,10 +1,11 @@
-// api/index.js (The full, updated file)
+// api/index.js
 
 const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
 const axios = require('axios');
 const micro = require('micro');
 
+// استخدام المتغير البيئي لـ Token
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const bot = new TelegramBot(token);
 
@@ -13,19 +14,26 @@ module.exports = async (req, res) => {
         if (req.method !== 'POST') {
             return res.status(405).send('Method Not Allowed');
         }
+
         const body = await micro.json(req);
         const update = body;
+
         if (update.message && update.message.document) {
             const chatId = update.message.chat.id;
             const fileId = update.message.document.file_id;
+
             await bot.sendMessage(chatId, 'يتم تحليل الملف الآن...');
+
             try {
                 const fileLink = await bot.getFileLink(fileId);
                 const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
                 const dataBuffer = Buffer.from(response.data);
+
                 const pdfData = await pdf(dataBuffer);
                 const text = pdfData.text;
+
                 const questions = extractQuestions(text);
+
                 if (questions.length > 0) {
                     for (const q of questions) {
                         await bot.sendPoll(chatId, q.question, q.options, {
@@ -45,6 +53,7 @@ module.exports = async (req, res) => {
     } catch (error) {
         console.error("General error:", error);
     }
+
     res.status(200).send('OK');
 };
 
@@ -54,20 +63,21 @@ function extractQuestions(text) {
     let currentQuestion = null;
     let i = 0;
 
+    // أنماط شاملة ومرنة للبحث
     const questionPatterns = [
-        /^\d+\.\s(.+)/, // يدعم الأسئلة التي تبدأ برقم ولا تحتوي على علامة استفهام
-        /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)\s/i
+        /^\d+\.\s(.+)/, // رقم ثم نقطة (مثل "1.")
+        /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)\s/i // كلمات استفهام
     ];
     const optionPatterns = [
-        /^[A-Z]\)\s*(.+)/i, // يدعم الأحرف الكبيرة والصغيرة
-        /^[A-Z]\.\s*(.+)/i, // يدعم الأحرف الكبيرة والصغيرة
-        /^\d+\)\s*(.+)/,
-        /^\d+\.\s*(.+)/,
-        /^\[[A-Z]\]\s*(.+)/i,
-        /^\(\s*([A-Z])\s*\)\s*(.+)/i
+        /^\s*([A-Z])\s*\)\s*(.+)/i, // حرف ثم قوس (مثل "A) Text" أو "a) Text")
+        /^\s*([A-Z])\s*\.\s*(.+)/i,  // حرف ثم نقطة (مثل "A. Text" أو "a. Text")
+        /^\s*(\d+)\s*\)\s*(.+)/,     // رقم ثم قوس (مثل "1) Text")
+        /^\s*(\d+)\s*\.\s*(.+)/,      // رقم ثم نقطة (مثل "1. Text")
+        /^\s*\[([A-Z])\]\s*(.+)/i,     // حرف بين قوسين مربعات (مثل "[A] Text")
+        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i // حرف بين قوسين هلاليين (مثل "(A) Text")
     ];
     const answerPatterns = [
-        /^(Answer|Correct Answer|Solution):?\s*([A-Z]|\d)\s*\)?\s*(.+)?/i,
+        /^(Answer|Correct Answer|Solution|Ans|Sol):?\s*([A-Z]|\d)\s*\)?\s*(.+)?/i,
         /^\s*([A-Z])\s*\)\s*(.+?)\s*$/i,
         /^\s*\d+\.\s*(.+?)\s*$/
     ];
@@ -75,7 +85,9 @@ function extractQuestions(text) {
     function findMatch(line, patterns) {
         for (const pattern of patterns) {
             const match = line.match(pattern);
-            if (match) return match;
+            if (match) {
+                return match;
+            }
         }
         return null;
     }
@@ -84,15 +96,25 @@ function extractQuestions(text) {
         const line = lines[i];
         let questionText = null;
         
-        const questionMatch = findMatch(line, questionPatterns);
-        if (questionMatch) {
+        const titleMatch = findMatch(line, [questionPatterns[0]]);
+        if (titleMatch) {
+            if (i + 1 < lines.length && findMatch(lines[i + 1], [questionPatterns[1]])) {
+                questionText = lines[i + 1];
+                i++;
+            } else {
+                questionText = line.replace(titleMatch[1], '').trim() || titleMatch[1];
+            }
+        } else if (findMatch(line, [questionPatterns[1]])) {
+            questionText = line;
+        }
+
+        if (questionText) {
             if (currentQuestion && currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
                 questions.push(currentQuestion);
             }
-            questionText = questionMatch[1].trim();
-
+            
             currentQuestion = {
-                question: questionText,
+                question: questionText.trim(),
                 options: [],
                 correctAnswerIndex: undefined
             };
@@ -101,7 +123,7 @@ function extractQuestions(text) {
             while (j < lines.length) {
                 const optionMatch = findMatch(lines[j], optionPatterns);
                 if (optionMatch) {
-                    currentQuestion.options.push(optionMatch[1].trim());
+                    currentQuestion.options.push(optionMatch[2].trim());
                     j++;
                 } else {
                     break;
@@ -132,6 +154,7 @@ function extractQuestions(text) {
         }
         i++;
     }
+
     if (currentQuestion && currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
         questions.push(currentQuestion);
     }
