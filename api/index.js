@@ -1,4 +1,4 @@
-// api/index.js (The full, updated file)
+// api/index.js
 
 const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
@@ -65,16 +65,16 @@ function extractQuestions(text) {
 
     // أنماط البحث الشاملة للأسئلة
     const questionPatterns = [
-        /^\s*(q|question)\s*\d+\s*[:\s-]?\s*(.+)/i, // يدعم q1, Q1, question1:
-        /^\d+\.\s(.+)/, // رقم ثم نقطة
+        /^\s*(q|question)\s*\d+\s*[:\s-]?\s*(.+)/i,
+        /^\d+\.\s(.+)/,
         /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)\s(.+)/i
     ];
 
     const optionPatterns = [
-        /^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i, // حرف مع فاصل
-        /^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/,   // رقم مع فاصل
-        /^\s*\[([A-Z])\]\s*(.+)/i,                  // حرف بين قوسين مربعات
-        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i             // حرف بين قوسين هلاليين
+        /^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i,
+        /^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/,
+        /^\s*\[([A-Z])\]\s*(.+)/i,
+        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i
     ];
     // أنماط شاملة للإجابات
     const answerPatterns = [
@@ -139,108 +139,6 @@ function extractQuestions(text) {
                                 currentQuestion.correctAnswerIndex = index;
                             }
                         }
-                    }
-                    i++;
-                }
-            }
-        }
-        i++;
-    }
-
-    if (currentQuestion && currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
-        questions.push(currentQuestion);
-    }
-    return questions;
-}
-
-// دالة parseTextWithRule هي نفسها لم تتغير
-function parseTextWithRule(text, rule) {
-    const questions = [];
-    const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-    let currentQuestion = null;
-    let i = 0;
-    while (i < lines.length) {
-        const line = lines[i];
-        const questionMatch = line.match(rule.questionRegex);
-        if (questionMatch) {
-            if (currentQuestion) {
-                if (currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
-                    questions.push(currentQuestion);
-                }
-            }
-            currentQuestion = {
-                question: questionMatch[1].trim(),
-                options: [],
-                correctAnswerIndex: undefined
-            };
-            let j = i + 1;
-            while (j < lines.length && lines[j].match(rule.optionRegex)) {
-                const optionMatch = lines[j].match(rule.optionRegex);
-                currentQuestion.options.push(optionMatch[1].trim());
-                j++;
-            }
-            i = j - 1;
-            if (i + 1 < lines.length) {
-                const nextLine = lines[i + 1];
-                const answerMatch = nextLine.match(rule.answerRegex);
-                if (answerMatch) {
-                    let answerText;
-                    if (answerMatch[3]) { // This handles "Answer: B) text"
-                        answerText = answerMatch[3].trim();
-                    } else { // This handles "Answer: text"
-                        answerText = answerMatch[2].trim();
-                    }
-                    const correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === answerText.toLowerCase());
-                    if (correctIndex !== -1) {
-                        currentQuestion.correctAnswerIndex = correctIndex;
-                    }
-                    i++;
-                }
-            }
-        }
-        i++;
-    }
-    if (currentQuestion && currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
-        questions.push(currentQuestion);
-    }
-    return questions;
-}
-
-function parseTextWithRule(text, rule) {
-    const questions = [];
-    const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-    let currentQuestion = null;
-    let i = 0;
-
-    while (i < lines.length) {
-        const line = lines[i];
-        const questionMatch = line.match(rule.questionRegex);
-        if (questionMatch) {
-            if (currentQuestion) {
-                if (currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
-                    questions.push(currentQuestion);
-                }
-            }
-            currentQuestion = {
-                question: questionMatch[1].trim(),
-                options: [],
-                correctAnswerIndex: undefined
-            };
-            let j = i + 1;
-            while (j < lines.length && lines[j].match(rule.optionRegex)) {
-                const optionMatch = lines[j].match(rule.optionRegex);
-                currentQuestion.options.push(optionMatch[1].trim());
-                j++;
-            }
-            i = j - 1;
-            if (i + 1 < lines.length) {
-                const nextLine = lines[i + 1];
-                const answerMatch = nextLine.match(rule.answerRegex);
-                if (answerMatch) {
-                    const answerText = answerMatch[2].trim();
-                    const correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === answerText.toLowerCase());
-                    if (correctIndex !== -1) {
-                        currentQuestion.correctAnswerIndex = correctIndex;
                     }
                     i++;
                 }
