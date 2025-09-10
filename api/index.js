@@ -69,21 +69,20 @@ module.exports = async (req, res) => {
 function extractQuestions(text) {
     const questions = [];
     const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-    let currentQuestion = null;
     let i = 0;
 
     const questionPatterns = [
         /^\s*(q|question)\s*\d+\s*[:\s-]?\s*(.+)/i,
         /^\d+\.\s(.+)/,
-        /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)\s(.+)/i,
-        /^(.+)\?$/,
-        /^(.+):$/
+        /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)\s(.+)/i
     ];
     const optionPatterns = [
         /^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i,
         /^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/,
         /^\s*\[([A-Z])\]\s*(.+)/i,
-        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i
+        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i,
+        /^\s*([A-Z])\s+(.+)/i,
+        /^\s*(\d+)\s+(.+)/
     ];
     const answerPatterns = [
         /^(Answer|Correct Answer|Solution|Ans|Sol):?\s*([A-Z]|\d)\s*[\)\.\/\-_\^&@':;"\\]?\s*(.+)?/i,
@@ -100,45 +99,28 @@ function extractQuestions(text) {
         }
         return null;
     }
-    
-    function isOptionOrAnswer(line) {
-        return findMatch(line, optionPatterns) || findMatch(line, answerPatterns);
-    }
 
     while (i < lines.length) {
         const line = lines[i];
-        let questionText = '';
-        
         const questionMatch = findMatch(line, questionPatterns);
-        if (questionMatch) {
-            // التحقق من وجود سطر عنوان يليه سطر سؤال
-            const numberedTitleMatch = findMatch(line, [questionPatterns[1]]);
-            if (numberedTitleMatch && i + 1 < lines.length && findMatch(lines[i + 1], questionPatterns)) {
-                questionText = lines[i + 1].trim();
-                i++;
-            } else {
-                questionText = line.trim();
-            }
 
-            if (currentQuestion && currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
-                questions.push(currentQuestion);
-            }
-            
-            // دمج الأسطر المتعددة
+        if (questionMatch) {
+            const initialQuestionText = questionMatch[0].trim();
+            let fullQuestionText = initialQuestionText;
+
             let j = i + 1;
-            while (j < lines.length && !findMatch(lines[j], questionPatterns) && !isOptionOrAnswer(lines[j])) {
-                questionText += ' ' + lines[j].trim();
+            while (j < lines.length && !findMatch(lines[j], optionPatterns) && !findMatch(lines[j], answerPatterns) && !findMatch(lines[j], questionPatterns)) {
+                fullQuestionText += ' ' + lines[j].trim();
                 j++;
             }
             i = j - 1;
 
-            currentQuestion = {
-                question: questionText,
+            const currentQuestion = {
+                question: fullQuestionText,
                 options: [],
                 correctAnswerIndex: undefined
             };
 
-            // البحث عن الخيارات
             j = i + 1;
             while (j < lines.length) {
                 const optionMatch = findMatch(lines[j], optionPatterns);
@@ -151,7 +133,6 @@ function extractQuestions(text) {
             }
             i = j - 1;
 
-            // البحث عن الإجابة
             if (i + 1 < lines.length) {
                 const answerMatch = findMatch(lines[i + 1], answerPatterns);
                 if (answerMatch) {
@@ -172,12 +153,9 @@ function extractQuestions(text) {
                     i++;
                 }
             }
+            questions.push(currentQuestion);
         }
         i++;
-    }
-
-    if (currentQuestion && currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
-        questions.push(currentQuestion);
     }
     return questions;
 }
