@@ -5,7 +5,6 @@ const pdf = require('pdf-parse');
 const axios = require('axios');
 const micro = require('micro');
 
-// استخدام المتغير البيئي لـ Token
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const bot = new TelegramBot(token);
 
@@ -14,26 +13,19 @@ module.exports = async (req, res) => {
         if (req.method !== 'POST') {
             return res.status(405).send('Method Not Allowed');
         }
-
         const body = await micro.json(req);
         const update = body;
-
         if (update.message && update.message.document) {
             const chatId = update.message.chat.id;
             const fileId = update.message.document.file_id;
-
             await bot.sendMessage(chatId, 'يتم تحليل الملف الآن...');
-
             try {
                 const fileLink = await bot.getFileLink(fileId);
                 const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
                 const dataBuffer = Buffer.from(response.data);
-
                 const pdfData = await pdf(dataBuffer);
                 const text = pdfData.text;
-
                 const questions = extractQuestions(text);
-
                 if (questions.length > 0) {
                     for (const q of questions) {
                         if (q.question.length > 255) {
@@ -62,13 +54,12 @@ module.exports = async (req, res) => {
     } catch (error) {
         console.error("General error:", error);
     }
-
     res.status(200).send('OK');
 };
 
 function extractQuestions(text) {
     const questions = [];
-    const lines = text.split('\n');
+    const lines = text.split('\n').map(line => line.trim());
     let i = 0;
 
     const questionPatterns = [
@@ -103,35 +94,39 @@ function extractQuestions(text) {
     }
 
     while (i < lines.length) {
-        const line = lines[i].trim();
-        if (line.length === 0) {
-            i++;
-            continue;
-        }
-
+        const line = lines[i];
         let questionText = null;
         
         const questionMatch = findMatch(line, questionPatterns);
         if (questionMatch) {
-            if (currentQuestion && currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
-                questions.push(currentQuestion);
-            }
-            
+            // Find start of question
             questionText = questionMatch[0].trim();
-            
+            let hasBlankLine = false;
+
+            // Greedily collect question text until a stop condition
             let j = i + 1;
-            while (j < lines.length && lines[j].trim().length > 0 && !findMatch(lines[j], optionPatterns) && !findMatch(lines[j], answerPatterns) && !findMatch(lines[j], questionPatterns)) {
+            while (j < lines.length && !findMatch(lines[j], questionPatterns) && !findMatch(lines[j], optionPatterns)) {
+                if (lines[j].trim().length === 0) {
+                    hasBlankLine = true;
+                    break;
+                }
                 questionText += ' ' + lines[j].trim();
                 j++;
             }
+            
+            if (hasBlankLine) {
+                i = j;
+                continue;
+            }
             i = j - 1;
 
-            currentQuestion = {
+            const currentQuestion = {
                 question: questionText,
                 options: [],
                 correctAnswerIndex: undefined
             };
 
+            // Collect options
             let k = i + 1;
             while (k < lines.length) {
                 const optionMatch = findMatch(lines[k], optionPatterns);
@@ -144,6 +139,7 @@ function extractQuestions(text) {
             }
             i = k - 1;
 
+            // Find answer
             if (i + 1 < lines.length) {
                 const answerMatch = findMatch(lines[i + 1], answerPatterns);
                 if (answerMatch) {
@@ -164,6 +160,7 @@ function extractQuestions(text) {
                     i++;
                 }
             }
+            
             if (currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
                 questions.push(currentQuestion);
             }
