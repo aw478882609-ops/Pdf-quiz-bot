@@ -36,11 +36,24 @@ module.exports = async (req, res) => {
 
                 if (questions.length > 0) {
                     for (const q of questions) {
-                        await bot.sendPoll(chatId, q.question, q.options, {
-                            type: 'quiz',
-                            correct_option_id: q.correctAnswerIndex,
-                            is_anonymous: false
-                        });
+                        // التحقق من طول السؤال
+                        if (q.question.length > 255) {
+                            // إرسال السؤال كنص عادي
+                            await bot.sendMessage(chatId, q.question);
+                            // ثم إرسال الخيارات كاستطلاع برأس قصير
+                            await bot.sendPoll(chatId, '.', q.options, {
+                                type: 'quiz',
+                                correct_option_id: q.correctAnswerIndex,
+                                is_anonymous: false
+                            });
+                        } else {
+                            // إرسال الاستطلاع برأس السؤال الكامل
+                            await bot.sendPoll(chatId, q.question, q.options, {
+                                type: 'quiz',
+                                correct_option_id: q.correctAnswerIndex,
+                                is_anonymous: false
+                            });
+                        }
                     }
                 } else {
                     await bot.sendMessage(chatId, 'لم أتمكن من العثور على أي أسئلة في الملف.');
@@ -68,8 +81,7 @@ function extractQuestions(text) {
         /^\d+\.\s(.+)/,
         /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)\s(.+)/i,
         /^(.+)\?$/,
-        /^(.+):$/,
-        /^(.+)/ // نمط عام لالتقاط أي سطر كـ "سؤال" في حالة فشل الأنماط السابقة
+        /^(.+):$/
     ];
     const optionPatterns = [
         /^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i,
