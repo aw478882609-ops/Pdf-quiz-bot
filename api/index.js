@@ -71,18 +71,22 @@ function extractQuestions(text) {
     const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
     let i = 0;
 
-    const questionPatterns = [
+    const titlePatterns = [
+        /^[A-Z\s]+$/, // Titles in all caps
+        /^[IVX]+\.\s/ // Roman numeral titles
+    ];
+    const questionStartPatterns = [
         /^\s*(q|question)\s*\d+\s*[:\s-]?\s*(.+)/i,
         /^\d+\.\s(.+)/,
-        /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)\s(.+)/i
+        /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)\s(.+)/i,
+        /^(.+)\?$/,
+        /^(.+):$/
     ];
     const optionPatterns = [
         /^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i,
         /^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/,
         /^\s*\[([A-Z])\]\s*(.+)/i,
-        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i,
-        /^\s*([A-Z])\s+(.+)/i,
-        /^\s*(\d+)\s+(.+)/
+        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i
     ];
     const answerPatterns = [
         /^(Answer|Correct Answer|Solution|Ans|Sol):?\s*([A-Z]|\d)\s*[\)\.\/\-_\^&@':;"\\]?\s*(.+)?/i,
@@ -99,39 +103,50 @@ function extractQuestions(text) {
         }
         return null;
     }
+    
+    function isOptionOrAnswer(line) {
+        return findMatch(line, optionPatterns) || findMatch(line, answerPatterns);
+    }
 
     while (i < lines.length) {
         const line = lines[i];
-        const questionMatch = findMatch(line, questionPatterns);
+        let questionText = '';
+        
+        const isTitleLine = findMatch(line, titlePatterns);
+        const questionMatch = findMatch(line, questionStartPatterns);
+
+        if (isTitleLine) {
+            i++;
+            continue;
+        }
 
         if (questionMatch) {
-            const initialQuestionText = questionMatch[0].trim();
-            let fullQuestionText = initialQuestionText;
-
+            questionText = questionMatch[0].trim();
+            
             let j = i + 1;
-            while (j < lines.length && !findMatch(lines[j], optionPatterns) && !findMatch(lines[j], answerPatterns) && !findMatch(lines[j], questionPatterns)) {
-                fullQuestionText += ' ' + lines[j].trim();
+            while (j < lines.length && !findMatch(lines[j], questionStartPatterns) && !isOptionOrAnswer(lines[j]) && lines[j].length > 0) {
+                questionText += ' ' + lines[j].trim();
                 j++;
             }
             i = j - 1;
 
             const currentQuestion = {
-                question: fullQuestionText,
+                question: questionText,
                 options: [],
                 correctAnswerIndex: undefined
             };
 
-            j = i + 1;
-            while (j < lines.length) {
-                const optionMatch = findMatch(lines[j], optionPatterns);
+            let k = i + 1;
+            while (k < lines.length) {
+                const optionMatch = findMatch(lines[k], optionPatterns);
                 if (optionMatch) {
                     currentQuestion.options.push(optionMatch[2].trim());
-                    j++;
+                    k++;
                 } else {
                     break;
                 }
             }
-            i = j - 1;
+            i = k - 1;
 
             if (i + 1 < lines.length) {
                 const answerMatch = findMatch(lines[i + 1], answerPatterns);
@@ -153,7 +168,9 @@ function extractQuestions(text) {
                     i++;
                 }
             }
-            questions.push(currentQuestion);
+            if (currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
+                questions.push(currentQuestion);
+            }
         }
         i++;
     }
