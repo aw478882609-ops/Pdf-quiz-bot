@@ -1,4 +1,4 @@
-// api/index.js (The full, updated file)
+// api/index.js
 
 const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
@@ -63,8 +63,11 @@ function extractQuestions(text) {
     let currentQuestion = null;
     let i = 0;
 
-    // أنماط البحث الشاملة للخيارات والإجابات
-    const questionKeywords = /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)/i;
+    // أنماط البحث الشاملة
+    const questionPatterns = [
+        /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)\s/i,
+        /^\d+\.\s(.+?\??)$/
+    ];
     const optionPatterns = [
         /^[A-Z]\)\s*(.+)/,
         /^[A-Z]\.\s*(.+)/,
@@ -75,23 +78,34 @@ function extractQuestions(text) {
     ];
     const answerPatterns = [
         /^(Answer|Correct Answer|Solution):?\s*([A-Z]|\d)\s*\)?\s*(.+)?/i,
-        /^\s*([A-Z])\s*\)\s*(.+?)\s*$/, // for answers like "B) Text" on a new line
-        /^\s*\d+\.\s*(.+?)\s*$/ // for answers like "2. Text" on a new line
+        /^\s*([A-Z])\s*\)\s*(.+?)\s*$/,
+        /^\s*\d+\.\s*(.+?)\s*$/,
+        /^\s*(Correct|Solution)\s*([A-Z])\s*\)?\s*(.+)?/i
     ];
     
+    function findMatch(line, patterns) {
+        for (const pattern of patterns) {
+            const match = line.match(pattern);
+            if (match) {
+                return match;
+            }
+        }
+        return null;
+    }
+
     while (i < lines.length) {
         const line = lines[i];
         let questionText = null;
         
         // 1. البحث عن السؤال
-        // الحالة الأولى: السؤال يبدأ برقم وعنوان ثم جملة السؤال
-        const titleMatch = line.match(/^\d+\.\s(.+)/);
-        if (titleMatch && i + 1 < lines.length && questionKeywords.test(lines[i + 1])) {
+        // الحالة الأولى: السؤال يبدأ برقم وعنوان ثم جملة السؤال (كما في ملفك)
+        const titleMatch = findMatch(line, [/^(\d+\.\s.*)/]);
+        if (titleMatch && i + 1 < lines.length && findMatch(lines[i+1], questionPatterns)) {
             questionText = lines[i + 1];
             i++;
         }
         // الحالة الثانية: السؤال يبدأ مباشرة بكلمة استفهام
-        else if (questionKeywords.test(line)) {
+        else if (findMatch(line, questionPatterns)) {
             questionText = line;
         }
 
@@ -109,43 +123,35 @@ function extractQuestions(text) {
             // 2. البحث عن الخيارات
             let j = i + 1;
             while (j < lines.length) {
-                let matchedOption = false;
-                for (const pattern of optionPatterns) {
-                    const optionMatch = lines[j].match(pattern);
-                    if (optionMatch) {
-                        currentQuestion.options.push(optionMatch[1].trim());
-                        matchedOption = true;
-                        break;
-                    }
+                const optionMatch = findMatch(lines[j], optionPatterns);
+                if (optionMatch) {
+                    currentQuestion.options.push(optionMatch[1].trim());
+                    j++;
+                } else {
+                    break;
                 }
-                if (!matchedOption) break;
-                j++;
             }
             i = j - 1;
 
             // 3. البحث عن الإجابة
             if (i + 1 < lines.length) {
-                for (const pattern of answerPatterns) {
-                    const answerMatch = lines[i + 1].match(pattern);
-                    if (answerMatch) {
-                        const answerText = (answerMatch[3] || answerMatch[2] || answerMatch[1]).trim();
-                        const correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === answerText.toLowerCase());
-                        if (correctIndex !== -1) {
-                            currentQuestion.correctAnswerIndex = correctIndex;
-                        } else {
-                            // محاولة مطابقة الإجابة بناءً على الحرف فقط (مثال: B)
-                            const letterMatch = answerText.match(/^[A-Z]\)/i);
-                            if (letterMatch) {
-                                const letter = letterMatch[0].charAt(0).toUpperCase();
-                                const index = letter.charCodeAt(0) - 'A'.charCodeAt(0);
-                                if (index >= 0 && index < currentQuestion.options.length) {
-                                    currentQuestion.correctAnswerIndex = index;
-                                }
+                const answerMatch = findMatch(lines[i + 1], answerPatterns);
+                if (answerMatch) {
+                    const answerText = (answerMatch[3] || answerMatch[2] || answerMatch[1]).trim();
+                    const correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === answerText.toLowerCase());
+                    if (correctIndex !== -1) {
+                        currentQuestion.correctAnswerIndex = correctIndex;
+                    } else {
+                        const letterMatch = answerText.match(/^[A-Z]/i);
+                        if (letterMatch) {
+                            const letter = letterMatch[0].toUpperCase();
+                            const index = letter.charCodeAt(0) - 'A'.charCodeAt(0);
+                            if (index >= 0 && index < currentQuestion.options.length) {
+                                currentQuestion.correctAnswerIndex = index;
                             }
                         }
-                        i++;
-                        break;
                     }
+                    i++;
                 }
             }
         }
