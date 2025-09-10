@@ -36,18 +36,14 @@ module.exports = async (req, res) => {
 
                 if (questions.length > 0) {
                     for (const q of questions) {
-                        // التحقق من طول السؤال
                         if (q.question.length > 255) {
-                            // إرسال السؤال كنص عادي
                             await bot.sendMessage(chatId, q.question);
-                            // ثم إرسال الخيارات كاستطلاع برأس قصير
                             await bot.sendPoll(chatId, '.', q.options, {
                                 type: 'quiz',
                                 correct_option_id: q.correctAnswerIndex,
                                 is_anonymous: false
                             });
                         } else {
-                            // إرسال الاستطلاع برأس السؤال الكامل
                             await bot.sendPoll(chatId, q.question, q.options, {
                                 type: 'quiz',
                                 correct_option_id: q.correctAnswerIndex,
@@ -72,95 +68,60 @@ module.exports = async (req, res) => {
 
 function extractQuestions(text) {
     const questions = [];
-    const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-    let currentQuestion = null;
-    let i = 0;
 
-    const questionPatterns = [
-        /^\s*(q|question)\s*\d+\s*[:\s-]?\s*(.+)/i,
-        /^\d+\.\s(.+)/,
-        /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)\s(.+)/i,
-        /^(.+)\?$/,
-        /^(.+):$/
-    ];
-    const optionPatterns = [
-        /^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i,
-        /^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/,
-        /^\s*\[([A-Z])\]\s*(.+)/i,
-        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i
-    ];
-    const answerPatterns = [
-        /^(Answer|Correct Answer|Solution|Ans|Sol):?\s*([A-Z]|\d)\s*[\)\.\/\-_\^&@':;"\\]?\s*(.+)?/i,
-        /^\s*([A-Z])\s*[\)\.\/\-_\^&@':;"\\]\s*(.+?)\s*$/i,
-        /^\s*\d+\s*[\)\.\/\-_\^&@':;"\\]\s*(.+?)\s*$/
-    ];
+    // نمط شامل للتقاط كل كتلة سؤال منفصلة
+    const questionBlockRegex = /(\d+\.\s.*?)(?=\d+\.\s|Answer:|Correct Answer:|Solution:|$)/gs;
+    let match;
 
-    function findMatch(line, patterns) {
-        for (const pattern of patterns) {
-            const match = line.match(pattern);
-            if (match) {
-                return match;
-            }
-        }
-        return null;
-    }
-
-    while (i < lines.length) {
-        const line = lines[i];
-        let questionText = null;
+    while ((match = questionBlockRegex.exec(text)) !== null) {
+        const block = match[1].trim();
+        const blockLines = block.split('\n').map(line => line.trim()).filter(line => line.length > 0);
         
-        const questionMatch = findMatch(line, questionPatterns);
-        if (questionMatch) {
-            questionText = questionMatch[0].trim();
+        let questionText = '';
+        let options = [];
+        let answerText = '';
 
-            if (currentQuestion && currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
-                questions.push(currentQuestion);
-            }
-            
-            currentQuestion = {
-                question: questionText,
-                options: [],
-                correctAnswerIndex: undefined
-            };
+        // أنماط فرعية لتحليل الكتلة
+        const questionTextRegex = /^(\d+\.\s|\s*(q|question)\s*\d+\s*[:\s-]?\s*|What|Which|Who|How|When|Where|Select|Choose|In the following|Identify|.+?\?|.+:)(.+)/i;
+        const optionRegex = /^\s*([A-Z]|\d)[\)\.\/\-_\^&@':;"\\]\s*(.+)/i;
+        const answerRegex = /^(Answer|Correct Answer|Solution|Ans|Sol):?\s*([A-Z]|\d)[\)\.\/\-_\^&@':;"\\]?\s*(.+)?/i;
 
-            let j = i + 1;
-            while (j < lines.length) {
-                const optionMatch = findMatch(lines[j], optionPatterns);
-                if (optionMatch) {
-                    currentQuestion.options.push(optionMatch[2].trim());
-                    j++;
-                } else {
-                    break;
-                }
-            }
-            i = j - 1;
-
-            if (i + 1 < lines.length) {
-                const answerMatch = findMatch(lines[i + 1], answerPatterns);
-                if (answerMatch) {
-                    const answerText = (answerMatch[3] || answerMatch[2] || answerMatch[1]).trim();
-                    const correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === answerText.toLowerCase());
-                    if (correctIndex !== -1) {
-                        currentQuestion.correctAnswerIndex = correctIndex;
-                    } else {
-                        const letterMatch = answerText.match(/^[A-Z]|\d/i);
-                        if (letterMatch) {
-                            const letterOrNumber = letterMatch[0].toUpperCase();
-                            const index = isNaN(parseInt(letterOrNumber)) ? letterOrNumber.charCodeAt(0) - 'A'.charCodeAt(0) : parseInt(letterOrNumber) - 1;
-                            if (index >= 0 && index < currentQuestion.options.length) {
-                                currentQuestion.correctAnswerIndex = index;
-                            }
-                        }
-                    }
-                    i++;
-                }
+        for (const line of blockLines) {
+            if (line.match(answerRegex)) {
+                const answerMatch = line.match(answerRegex);
+                answerText = (answerMatch[3] || answerMatch[2] || answerMatch[1]).trim();
+            } else if (line.match(optionRegex)) {
+                const optionMatch = line.match(optionRegex);
+                options.push(optionMatch[2].trim());
+            } else if (line.match(questionTextRegex)) {
+                questionText = line.trim();
             }
         }
-        i++;
-    }
 
-    if (currentQuestion && currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
-        questions.push(currentQuestion);
+        if (questionText && options.length > 0 && answerText) {
+            const correctIndex = options.findIndex(opt => opt.toLowerCase() === answerText.toLowerCase());
+
+            if (correctIndex === -1) {
+                const letterMatch = answerText.match(/^[A-Z]|\d/i);
+                if (letterMatch) {
+                    const letterOrNumber = letterMatch[0].toUpperCase();
+                    const index = isNaN(parseInt(letterOrNumber)) ? letterOrNumber.charCodeAt(0) - 'A'.charCodeAt(0) : parseInt(letterOrNumber) - 1;
+                    if (index >= 0 && index < options.length) {
+                        questions.push({
+                            question: questionText,
+                            options: options,
+                            correctAnswerIndex: index
+                        });
+                    }
+                }
+            } else {
+                questions.push({
+                    question: questionText,
+                    options: options,
+                    correctAnswerIndex: correctIndex
+                });
+            }
+        }
     }
     return questions;
 }
