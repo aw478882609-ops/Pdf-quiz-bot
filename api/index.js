@@ -1,13 +1,13 @@
 // api/index.js
 
-const TelegramBot = require('telegram-bot-api');
+const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
 const axios = require('axios');
 const micro = require('micro');
 
 // استخدام المتغير البيئي لـ Token
 const token = process.env.TELEGRAM_BOT_TOKEN;
-const bot = new TelegramBot({ token: token });
+const bot = new TelegramBot(token);
 
 module.exports = async (req, res) => {
     try {
@@ -22,10 +22,10 @@ module.exports = async (req, res) => {
             const chatId = update.message.chat.id;
             const fileId = update.message.document.file_id;
 
-            await bot.sendMessage({ chat_id: chatId, text: 'يتم تحليل الملف الآن...' });
+            await bot.sendMessage(chatId, 'يتم تحليل الملف الآن...');
 
             try {
-                const fileLink = await bot.getFileLink({ file_id: fileId });
+                const fileLink = await bot.getFileLink(fileId);
                 const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
                 const dataBuffer = Buffer.from(response.data);
 
@@ -36,21 +36,18 @@ module.exports = async (req, res) => {
 
                 if (questions.length > 0) {
                     for (const q of questions) {
-                        await bot.sendPoll({
-                            chat_id: chatId,
-                            question: q.question,
-                            options: q.options,
+                        await bot.sendPoll(chatId, q.question, q.options, {
                             type: 'quiz',
                             correct_option_id: q.correctAnswerIndex,
                             is_anonymous: false
                         });
                     }
                 } else {
-                    await bot.sendMessage({ chat_id: chatId, text: 'لم أتمكن من العثور على أي أسئلة في الملف.' });
+                    await bot.sendMessage(chatId, 'لم أتمكن من العثور على أي أسئلة في الملف.');
                 }
             } catch (error) {
                 console.error("Error processing PDF:", error);
-                await bot.sendMessage({ chat_id: chatId, text: 'حدث خطأ أثناء معالجة الملف. تأكد من أن صيغ الأسئلة صحيحة.' });
+                await bot.sendMessage(chatId, 'حدث خطأ أثناء معالجة الملف. تأكد من أن صيغ الأسئلة صحيحة.');
             }
         }
     } catch (error) {
@@ -61,7 +58,6 @@ module.exports = async (req, res) => {
 };
 
 function extractQuestions(text) {
-    // تحديد قواعد التحليل
     const rules = [
         {
             name: "Numbered Questions with Lettered Options (A., B.) and Answer Key",
