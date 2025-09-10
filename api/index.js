@@ -1,4 +1,4 @@
-// api/index.js (Full, corrected file)
+// api/index.js (The full, updated file)
 
 const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
@@ -63,22 +63,24 @@ function extractQuestions(text) {
     let currentQuestion = null;
     let i = 0;
 
+    // أنماط البحث الشاملة للأسئلة
     const questionPatterns = [
-        /^(\d+\.\s(.+))/, // رقم ثم نقطة ثم النص
+        /^\s*(q|question)\s*\d+\s*[:\s-]?\s*(.+)/i, // يدعم q1, Q1, question1:
+        /^\d+\.\s(.+)/, // رقم ثم نقطة
         /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)\s(.+)/i
     ];
+    // أنماط شاملة للخيارات (حروف وأرقام مع مجموعة واسعة من الفواصل)
     const optionPatterns = [
-        /^\s*([A-Z])\s*\)\s*(.+)/i,
-        /^\s*([A-Z])\s*\.\s*(.+)/i,
-        /^\s*(\d+)\s*\)\s*(.+)/,
-        /^\s*(\d+)\s*\.\s*(.+)/,
-        /^\s*\[([A-Z])\]\s*(.+)/i,
-        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i
+        /^\s*([A-Z])[\)\.\/\-_\^@':;"]\s*(.+)/i, // حرف مع فاصل (A) أو A. أو A/
+        /^\s*(\d+)[\)\.\/\-_\^@':;"]\s*(.+)/, // رقم مع فاصل (1) أو 1. أو 1/
+        /^\s*\[([A-Z])\]\s*(.+)/i, // حرف بين قوسين مربعات
+        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i // حرف بين قوسين هلاليين
     ];
+    // أنماط شاملة للإجابات
     const answerPatterns = [
-        /^(Answer|Correct Answer|Solution):?\s*([A-Z]|\d)\s*\)?\s*(.+)?/i,
-        /^\s*([A-Z])\s*\)\s*(.+?)\s*$/i,
-        /^\s*\d+\.\s*(.+?)\s*$/
+        /^(Answer|Correct Answer|Solution|Ans|Sol):?\s*([A-Z]|\d)\s*[\)\.\/\-_\^@':;"]?\s*(.+)?/i,
+        /^\s*([A-Z])\s*[\)\.\/\-_\^@':;"]\s*(.+?)\s*$/i,
+        /^\s*\d+\s*[\)\.\/\-_\^@':;"]\s*(.+?)\s*$/
     ];
 
     function findMatch(line, patterns) {
@@ -95,11 +97,9 @@ function extractQuestions(text) {
         const line = lines[i];
         let questionText = null;
         
-        // البحث عن السؤال
         const questionMatch = findMatch(line, questionPatterns);
         if (questionMatch) {
-            // استخدام المجموعة الثانية من الـ regex لالتقاط النص فقط
-            questionText = questionMatch[2].trim();
+            questionText = questionMatch[2] ? questionMatch[2].trim() : questionMatch[1].trim();
 
             if (currentQuestion && currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
                 questions.push(currentQuestion);
@@ -131,10 +131,10 @@ function extractQuestions(text) {
                     if (correctIndex !== -1) {
                         currentQuestion.correctAnswerIndex = correctIndex;
                     } else {
-                        const letterMatch = answerText.match(/^[A-Z]/i);
+                        const letterMatch = answerText.match(/^[A-Z]|\d/i);
                         if (letterMatch) {
-                            const letter = letterMatch[0].toUpperCase();
-                            const index = letter.charCodeAt(0) - 'A'.charCodeAt(0);
+                            const letterOrNumber = letterMatch[0].toUpperCase();
+                            const index = isNaN(parseInt(letterOrNumber)) ? letterOrNumber.charCodeAt(0) - 'A'.charCodeAt(0) : parseInt(letterOrNumber) - 1;
                             if (index >= 0 && index < currentQuestion.options.length) {
                                 currentQuestion.correctAnswerIndex = index;
                             }
