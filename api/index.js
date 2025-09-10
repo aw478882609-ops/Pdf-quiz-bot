@@ -1,4 +1,4 @@
-// api/index.js
+// api/index.js (Full, corrected file)
 
 const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
@@ -63,21 +63,20 @@ function extractQuestions(text) {
     let currentQuestion = null;
     let i = 0;
 
-    // أنماط شاملة ومرنة للبحث
     const questionPatterns = [
-        /^\d+\.\s(.+)/, // رقم ثم نقطة (مثل "1.")
-        /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)\s/i // كلمات استفهام
+        /^(\d+\.\s(.+))/, // رقم ثم نقطة ثم النص
+        /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)\s(.+)/i
     ];
     const optionPatterns = [
-        /^\s*([A-Z])\s*\)\s*(.+)/i, // حرف ثم قوس (مثل "A) Text" أو "a) Text")
-        /^\s*([A-Z])\s*\.\s*(.+)/i,  // حرف ثم نقطة (مثل "A. Text" أو "a. Text")
-        /^\s*(\d+)\s*\)\s*(.+)/,     // رقم ثم قوس (مثل "1) Text")
-        /^\s*(\d+)\s*\.\s*(.+)/,      // رقم ثم نقطة (مثل "1. Text")
-        /^\s*\[([A-Z])\]\s*(.+)/i,     // حرف بين قوسين مربعات (مثل "[A] Text")
-        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i // حرف بين قوسين هلاليين (مثل "(A) Text")
+        /^\s*([A-Z])\s*\)\s*(.+)/i,
+        /^\s*([A-Z])\s*\.\s*(.+)/i,
+        /^\s*(\d+)\s*\)\s*(.+)/,
+        /^\s*(\d+)\s*\.\s*(.+)/,
+        /^\s*\[([A-Z])\]\s*(.+)/i,
+        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i
     ];
     const answerPatterns = [
-        /^(Answer|Correct Answer|Solution|Ans|Sol):?\s*([A-Z]|\d)\s*\)?\s*(.+)?/i,
+        /^(Answer|Correct Answer|Solution):?\s*([A-Z]|\d)\s*\)?\s*(.+)?/i,
         /^\s*([A-Z])\s*\)\s*(.+?)\s*$/i,
         /^\s*\d+\.\s*(.+?)\s*$/
     ];
@@ -96,25 +95,18 @@ function extractQuestions(text) {
         const line = lines[i];
         let questionText = null;
         
-        const titleMatch = findMatch(line, [questionPatterns[0]]);
-        if (titleMatch) {
-            if (i + 1 < lines.length && findMatch(lines[i + 1], [questionPatterns[1]])) {
-                questionText = lines[i + 1];
-                i++;
-            } else {
-                questionText = line.replace(titleMatch[1], '').trim() || titleMatch[1];
-            }
-        } else if (findMatch(line, [questionPatterns[1]])) {
-            questionText = line;
-        }
+        // البحث عن السؤال
+        const questionMatch = findMatch(line, questionPatterns);
+        if (questionMatch) {
+            // استخدام المجموعة الثانية من الـ regex لالتقاط النص فقط
+            questionText = questionMatch[2].trim();
 
-        if (questionText) {
             if (currentQuestion && currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
                 questions.push(currentQuestion);
             }
             
             currentQuestion = {
-                question: questionText.trim(),
+                question: questionText,
                 options: [],
                 correctAnswerIndex: undefined
             };
