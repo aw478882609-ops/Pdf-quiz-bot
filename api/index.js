@@ -28,11 +28,6 @@ module.exports = async (req, res) => {
                 const pdfData = await pdf(dataBuffer);
                 const text = pdfData.text;
 
-                // ✅ استدعاء دالة Debug هنا
-                debugPdfText(text);
-
-                // بعد ما تشوف الـ Console وتفهم شكل البيانات
-                // تقدر تفعل extractQuestions
                 const questions = extractQuestions(text);
 
                 if (questions.length > 0) {
@@ -66,29 +61,156 @@ module.exports = async (req, res) => {
     res.status(200).send('OK');
 };
 
-// =====================
-// Debug Function
-// =====================
-function debugPdfText(text) {
-    // 🧹 تنظيف مبدئي
+// =================================================================
+//                دالة استخراج الأسئلة من النص
+// =================================================================
+function extractQuestions(text) {
+    const questions = [];
+
+    // 🧹 تنظيف النص
     text = text
         .replace(/\r\n/g, '\n')
         .replace(/\r/g, '\n')
         .replace(/\f/g, '\n')
         .replace(/\u2028|\u2029/g, '\n');
 
-    const lines = text.split('\n');
+    const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    let i = 0;
 
-    console.log("\n=== أول 20 سطر بعد استخراج النص ===");
-    lines.slice(0, 20).forEach((line, idx) => {
-        console.log(`${idx + 1}: [${line}]`);
-    });
-}
+    // ✅ أنماط بداية السؤال
+    const questionPatterns = [
+        /^\s*(q|question)\s*\d+\s*[:\s-]?\s*(.+)/i,  // Q1: أو Question 1 -
+        /^\d+\.\s(.+)/,                              // 1. نص
+        /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)\s(.+)/i, // كلمات مفتاحية
+        /^(.+)\?$/,                                  // أي جملة منتهية بـ ؟
+        /^(.+):$/                                    // أي جملة منتهية بـ :
+    ];
 
-// =====================
-// Question Extractor
-// =====================
-function extractQuestions(text) {
-    // (خليها فاضية دلوقتي أو حط النسخة القديمة)
-    return [];
+    // ✅ أنماط الخيارات
+    const optionPatterns = [
+        /^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i, // A) Text
+        /^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/,   // 1) Text
+        /^\s*\[([A-Z])\]\s*(.+)/i,                 // [A] Text
+        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i,           // (A) Text
+        /^\s*([A-Z])\s+(.+)/i,                     // A Text
+        /^\s*(\d+)\s+(.+)/                         // 1 Text
+    ];
+
+    // ✅ أنماط الإجابة
+    const answerPatterns = [
+        /^(Answer|Correct Answer|Solution|Ans|Sol):?\s*([A-Z]|\d)\s*[\)\.\/\-_\^&@':;"\\]?\s*(.+)?/i
+    ];
+
+    function findMatch(line, patterns) {
+        for (const pattern of patterns) {
+            const match = line.match(pattern);
+            if (match) return match;
+        }
+        return null;
+    }
+
+    // ✅ تحديد العنوان (يتجاهله)
+    function isHeading(line, nextLine) {
+        const wordCount = line.split(/\s+/).length;
+        const looksLikeQuestion = nextLine && findMatch(nextLine, questionPatterns);
+        return (
+            wordCount <= 4 &&
+            !line.endsWith('?') &&
+            !line.endsWith(':') &&
+            looksLikeQuestion
+        );
+    }
+
+    while (i < lines.length) {
+        const line = lines[i];
+        const questionMatch = findMatch(line, questionPatterns);
+
+        if (questionMatch) {
+            let questionText = questionMatch[0].trim();
+
+            // ✅ تجاهل العناوين
+            if (isHeading(questionText, lines[i + 1])) {
+                console.log("📌 تجاهل العنوان:", questionText);
+                i++;
+                continue;
+            }
+
+            let potentialOptionsIndex = -1;
+
+            // ابحث عن أول اختيار
+            let j = i + 1;
+            while (j < lines.length) {
+                if (findMatch(lines[j], optionPatterns)) {
+                    potentialOptionsIndex = j;
+                    break;
+                }
+                j++;
+            }
+
+            if (potentialOptionsIndex !== -1) {
+                // اجمع نص السؤال
+                for (let k = i + 1; k < potentialOptionsIndex; k++) {
+                    questionText += ' ' + lines[k];
+                }
+
+                const currentQuestion = {
+                    question: questionText,
+                    options: [],
+                    correctAnswerIndex: undefined
+                };
+
+                // اجمع الاختيارات
+                let k = potentialOptionsIndex;
+                while (k < lines.length) {
+                    const optionMatch = findMatch(lines[k], optionPatterns);
+                    if (optionMatch) {
+                        const optionText = optionMatch[2] ? optionMatch[2].trim() : optionMatch[1].trim();
+                        currentQuestion.options.push(optionText);
+                        k++;
+                    } else {
+                        break;
+                    }
+                }
+
+                i = k - 1;
+
+                // دور على الإجابة
+                if (i + 1 < lines.length) {
+                    const answerMatch = findMatch(lines[i + 1], answerPatterns);
+                    if (answerMatch) {
+                        const answerText = (answerMatch[3] || answerMatch[2] || answerMatch[1]).trim();
+                        let correctIndex = currentQuestion.options.findIndex(
+                            opt => opt.toLowerCase() === answerText.toLowerCase()
+                        );
+
+                        if (correctIndex === -1) {
+                            const letterMatch = answerText.match(/^[A-Z]|\d/i);
+                            if (letterMatch) {
+                                const letterOrNumber = letterMatch[0].toUpperCase();
+                                const index = isNaN(parseInt(letterOrNumber))
+                                    ? letterOrNumber.charCodeAt(0) - 'A'.charCodeAt(0)
+                                    : parseInt(letterOrNumber) - 1;
+                                if (index >= 0 && index < currentQuestion.options.length) {
+                                    correctIndex = index;
+                                }
+                            }
+                        }
+
+                        if (correctIndex !== -1) {
+                            currentQuestion.correctAnswerIndex = correctIndex;
+                            i++;
+                        }
+                    }
+                }
+
+                if (currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
+                    questions.push(currentQuestion);
+                }
+            }
+        }
+
+        i++;
+    }
+
+    return questions;
 }
