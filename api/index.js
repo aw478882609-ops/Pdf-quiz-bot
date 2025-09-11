@@ -130,34 +130,36 @@ module.exports = async (req, res) => {
                 const questions = userState[userId].questions;
 
                 try {
+                    // --- الخطوة الأولى: التأكد من وجود الشات وأن البوت عضو فيه ---
                     const chatInfo = await bot.getChat(targetChatId);
-                    const membersCount = await bot.getChatMembersCount(targetChatId);
-
+                    
                     if (chatInfo.type === 'private') {
                         await bot.sendMessage(chatId, '❌ لا يمكن إرسال الأسئلة إلى المستخدمين مباشرةً. يرجى استخدام معرف قناة أو مجموعة.');
                         delete userState[userId];
                         return;
                     }
                     
-                    const chatType = chatInfo.type === 'channel' ? 'قناة' : 'مجموعة';
-                    let infoText = `*تم العثور على المعلومات التالية:*\n\n`;
-                    infoText += `👤 *الاسم:* ${chatInfo.title}\n`;
-                    infoText += `🆔 *المعرف:* \`${chatInfo.id}\`\n`;
-                    infoText += `*النوع:* ${chatType}\n`;
-                    infoText += `👥 *عدد الأعضاء:* ${membersCount}\n`;
-                    if (chatInfo.description) {
-                         infoText += `📝 *الوصف:* ${chatInfo.description}\n`;
-                    }
-
-                    await bot.sendMessage(chatId, infoText, { parse_mode: 'Markdown' });
-                    
                     const botInfo = await bot.getMe();
                     const botMember = await bot.getChatMember(targetChatId, botInfo.id);
 
+                    // --- الخطوة الثانية: التحقق إذا كان البوت مشرفًا ---
                     if (botMember.status === 'administrator' || botMember.status === 'creator') {
+                        // --- الخطوة الثالثة (الآمنة الآن): طلب المعلومات الإضافية ---
+                        const membersCount = await bot.getChatMembersCount(targetChatId);
+
+                        const chatType = chatInfo.type === 'channel' ? 'قناة' : 'مجموعة';
+                        let infoText = `*تم العثور على المعلومات التالية:*\n\n`;
+                        infoText += `👤 *الاسم:* ${chatInfo.title}\n`;
+                        infoText += `🆔 *المعرف:* \`${chatInfo.id}\`\n`;
+                        infoText += `*النوع:* ${chatType}\n`;
+                        infoText += `👥 *عدد الأعضاء:* ${membersCount}\n`;
+                        if (chatInfo.description) {
+                            infoText += `📝 *الوصف:* ${chatInfo.description}\n`;
+                        }
+                        await bot.sendMessage(chatId, infoText, { parse_mode: 'Markdown' });
+
+                        // --- الخطوة الرابعة: التحقق من الصلاحيات المحددة ---
                         if (botMember.can_post_messages && botMember.can_send_polls !== false) {
-                            
-                            // --- الخطوة الجديدة: طلب التأكيد ---
                             userState[userId].awaiting = 'send_confirmation';
                             userState[userId].targetChatId = targetChatId;
                             userState[userId].targetChatTitle = chatInfo.title;
@@ -180,7 +182,7 @@ module.exports = async (req, res) => {
                     } else {
                         await bot.sendMessage(chatId, '⚠️ أنا لست مشرفًا (Admin) في هذه القناة/المجموعة.');
                         delete userState[userId];
-}
+                    }
 
                 } catch (error) {
                     console.error(error);
