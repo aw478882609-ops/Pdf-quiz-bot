@@ -79,21 +79,21 @@ function extractQuestions(text) {
 
     // ✅ أنماط بداية السؤال
     const questionPatterns = [
-        /^\s*(q|question)\s*\d+\s*[:\s-]?\s*(.+)/i,  
-        /^\d+\.\s(.+)/,                              
-        /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify|Explain|Define|Describe|List|State|Write|Give)\s(.+)/i, 
-        /^(.+)\?$/,                                  
-        /^(.+):$/                                    
+        /^\s*(q|question)\s*\d+\s*[:\s-]?\s*(.+)/i,
+        /^\d+\.\s(.+)/,
+        /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify|Explain|Define|Describe|List|State|Write|Give)\s(.+)/i,
+        /^(.+)\?$/,
+        /^(.+):$/
     ];
 
     // ✅ أنماط الخيارات
     const optionPatterns = [
-        /^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i, 
-        /^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/,   
-        /^\s*\[([A-Z])\]\s*(.+)/i,                 
-        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i,           
-        /^\s*([A-Z])\s+(.+)/i,                     
-        /^\s*(\d+)\s+(.+)/                         
+        /^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i,
+        /^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/,
+        /^\s*\[([A-Z])\]\s*(.+)/i,
+        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i,
+        /^\s*([A-Z])\s+(.+)/i,
+        /^\s*(\d+)\s+(.+)/
     ];
 
     // ✅ أنماط الإجابة
@@ -129,45 +129,37 @@ function extractQuestions(text) {
     }
 
     while (i < lines.length) {
-        const line = lines[i].trim();
+        const line = lines[i];
         if (!line) {
             i++;
             continue;
         }
 
         const questionMatch = findMatch(line, questionPatterns);
-
         if (questionMatch) {
-            // ✅ أول ما يتعرف على بداية سؤال → يبدأ التجميع مباشرة
             let questionText = questionMatch[0].trim();
-            let m = i + 1;
-            while (m < lines.length) {
-                const nextLine = lines[m].trim();
-                if (!nextLine) { m++; continue; }
-
-                // وقف عند أول اختيار أو إجابة
-                if (findMatch(nextLine, optionPatterns) || findMatch(nextLine, answerPatterns)) {
-                    break;
-                }
-                questionText += ' ' + nextLine;
-                m++;
-            }
-
-            // 🟡 ابحث عن أول اختيار بعد السؤال
             let potentialOptionsIndex = -1;
-            let j = m;
+
+            // ✅ اجمع النصوص بين بداية السؤال وأول اختيار أو إجابة
+            let j = i + 1;
             while (j < lines.length) {
-                if (findMatch(lines[j], optionPatterns)) {
-                    potentialOptionsIndex = j;
+                const currentLine = lines[j].trim();
+
+                if (!currentLine) { // تجاهل الأسطر الفاضية
+                    j++;
+                    continue;
+                }
+
+                if (findMatch(currentLine, optionPatterns) || findMatch(currentLine, answerPatterns)) {
+                    potentialOptionsIndex = findMatch(currentLine, optionPatterns) ? j : -1;
                     break;
                 }
-                if (findMatch(lines[j], answerPatterns)) {
-                    potentialOptionsIndex = -1;
-                    break;
-                }
+
+                questionText += ' ' + currentLine;
                 j++;
             }
 
+            // ✅ لو لقينا بداية للخيارات
             if (potentialOptionsIndex !== -1) {
                 const currentQuestion = {
                     question: questionText,
@@ -179,12 +171,14 @@ function extractQuestions(text) {
                 let k = potentialOptionsIndex;
                 const optionLines = [];
                 while (k < lines.length) {
-                    if (findMatch(lines[k], answerPatterns)) {
-                        break; 
+                    const optLine = lines[k].trim();
+                    if (findMatch(optLine, answerPatterns)) {
+                        break; // وقف عند الإجابة
                     }
-                    const optionMatch = findMatch(lines[k], optionPatterns);
+
+                    const optionMatch = findMatch(optLine, optionPatterns);
                     if (optionMatch) {
-                        optionLines.push(lines[k]);
+                        optionLines.push(optLine);
                         const optionText = optionMatch[2] ? optionMatch[2].trim() : optionMatch[1].trim();
                         currentQuestion.options.push(optionText);
                         k++;
@@ -195,7 +189,7 @@ function extractQuestions(text) {
 
                 // ✅ تحقق من تناسق الاختيارات
                 if (!areOptionsConsistent(optionLines)) {
-                    console.log("📌 تم تجاهل سؤال (اختيارات غير متناسقة):", questionText);
+                    console.log("📌 تجاهل سؤال (اختيارات غير متناسقة):", questionText);
                     i++;
                     continue;
                 }
