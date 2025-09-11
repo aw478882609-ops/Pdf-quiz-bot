@@ -98,7 +98,7 @@ function extractQuestions(text) {
 
     // ✅ أنماط الإجابة
     const answerPatterns = [
-        /^(Answer|Correct Answer|Solution|Ans|Sol):?\s*([A-Z]|\d)\s*[\)\.\/\-_\^&@':;"\\]?\s*(.+)?/i
+        /^(Answer|Correct Answer|Solution|Ans|Sol):?/i
     ];
 
     function findMatch(line, patterns) {
@@ -109,29 +109,23 @@ function extractQuestions(text) {
         return null;
     }
 
-    // ✅ تحديد العنوان (يتجاهله حتى لو فيه سطور فاضية)
-    function isHeading(line, lines, index) {
-        const wordCount = line.split(/\s+/).filter(Boolean).length;
+    // ✅ التحقق من تناسق الاختيارات
+    function areOptionsConsistent(optionLines) {
+        if (optionLines.length === 0) return false;
+        let style = null;
 
-        // دور على أول سطر غير فاضي بعد العنوان
-        let j = index + 1;
-        let nextNonEmpty = null;
-        while (j < lines.length) {
-            if (lines[j].trim().length > 0) {
-                nextNonEmpty = lines[j];
-                break;
+        for (const line of optionLines) {
+            if (/^[A-Z][\)\.\s]/.test(line)) {
+                if (!style) style = "letters";
+                if (style !== "letters") return false;
+            } else if (/^\d+[\)\.\s]/.test(line)) {
+                if (!style) style = "numbers";
+                if (style !== "numbers") return false;
+            } else {
+                return false;
             }
-            j++;
         }
-
-        const looksLikeQuestion = nextNonEmpty && findMatch(nextNonEmpty, questionPatterns);
-
-        return (
-            wordCount <= 4 &&
-            !line.endsWith('?') &&
-            !line.endsWith(':') &&
-            looksLikeQuestion
-        );
+        return true;
     }
 
     while (i < lines.length) {
@@ -146,27 +140,24 @@ function extractQuestions(text) {
         if (questionMatch) {
             let questionText = questionMatch[0].trim();
 
-            // ✅ تجاهل العناوين
-            if (isHeading(questionText, lines, i)) {
-                console.log("📌 تجاهل العنوان:", questionText);
-                i++;
-                continue;
-            }
-
+            // 🟡 ابحث عن أول اختيار
             let potentialOptionsIndex = -1;
-
-            // ابحث عن أول اختيار
             let j = i + 1;
             while (j < lines.length) {
                 if (findMatch(lines[j], optionPatterns)) {
                     potentialOptionsIndex = j;
                     break;
                 }
+                // لو قابلنا إجابة قبل ما نلاقي اختيارات → ده مش سؤال
+                if (findMatch(lines[j], answerPatterns)) {
+                    potentialOptionsIndex = -1;
+                    break;
+                }
                 j++;
             }
 
             if (potentialOptionsIndex !== -1) {
-                // اجمع نص السؤال
+                // ✅ اجمع نص السؤال
                 for (let k = i + 1; k < potentialOptionsIndex; k++) {
                     if (lines[k].trim().length > 0) {
                         questionText += ' ' + lines[k];
@@ -179,11 +170,16 @@ function extractQuestions(text) {
                     correctAnswerIndex: undefined
                 };
 
-                // اجمع الاختيارات
+                // ✅ اجمع الاختيارات لحد ما يقابل إجابة
                 let k = potentialOptionsIndex;
+                const optionLines = [];
                 while (k < lines.length) {
+                    if (findMatch(lines[k], answerPatterns)) {
+                        break; // وقف عند الإجابة
+                    }
                     const optionMatch = findMatch(lines[k], optionPatterns);
                     if (optionMatch) {
+                        optionLines.push(lines[k]);
                         const optionText = optionMatch[2] ? optionMatch[2].trim() : optionMatch[1].trim();
                         currentQuestion.options.push(optionText);
                         k++;
@@ -192,13 +188,22 @@ function extractQuestions(text) {
                     }
                 }
 
+                // ✅ تحقق من تناسق الاختيارات
+                if (!areOptionsConsistent(optionLines)) {
+                    console.log("📌 تم تجاهل العنوان (اختيارات غير متناسقة):", questionText);
+                    i++;
+                    continue;
+                }
+
                 i = k - 1;
 
-                // دور على الإجابة
+                // ✅ دور على الإجابة
                 if (i + 1 < lines.length) {
                     const answerMatch = findMatch(lines[i + 1], answerPatterns);
                     if (answerMatch) {
-                        const answerText = (answerMatch[3] || answerMatch[2] || answerMatch[1]).trim();
+                        const answerLine = lines[i + 1];
+                        let answerText = answerLine.replace(/^(Answer|Correct Answer|Solution|Ans|Sol):?/i, '').trim();
+
                         let correctIndex = currentQuestion.options.findIndex(
                             opt => opt.toLowerCase() === answerText.toLowerCase()
                         );
