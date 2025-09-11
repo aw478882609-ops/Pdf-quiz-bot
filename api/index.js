@@ -186,7 +186,7 @@ function extractQuestions(text) {
     const lines = text.split('\n').map(l => l.trim());
     let i = 0;
     const questions = [];
-    const letterOptionPatterns = [/^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i, /^\s*\[([A-Z])\]\s*(.+)/i, /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i, /^\s*([A-Z])\s+(.+)/i,];
+    const letterOptionPatterns = [/^\s*-\s*([A-Z])\.\s*(.+)/i,/^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i, /^\s*\[([A-Z])\]\s*(.+)/i, /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i, /^\s*([A-Z])\s+(.+)/i,];
     const numberOptionPatterns = [/^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/, /^\s*(\d+)\s+(.+)/];
     const optionPatterns = [...letterOptionPatterns, ...numberOptionPatterns];
     const answerPatterns = [/^(Answer|Correct Answer|Solution|Ans|Sol):?/i];
