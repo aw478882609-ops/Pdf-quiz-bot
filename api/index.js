@@ -11,22 +11,55 @@ const bot = new TelegramBot(token);
 // 🧠 متغير لتخزين حالة المستخدم والأسئلة المستخرجة مؤقتًا
 const userState = {};
 
-// دالة مساعدة لإرسال الأسئلة
-async function sendPolls(targetChatId, questions) {
-    for (const q of questions) {
-        if (q.question.length > 255) {
-            await bot.sendMessage(targetChatId, q.question);
-            await bot.sendPoll(targetChatId, '.', q.options, {
-                type: 'quiz',
-                correct_option_id: q.correctAnswerIndex,
-                is_anonymous: true
+// --- تم استبدال الدالة بالنسخة الذكية التي تفرق بين الشات العادي والقنوات ---
+async function sendPolls(targetChatId, questions, chatType = 'private') {
+    
+    // الطريقة السريعة: للقنوات والمجموعات
+    if (chatType === 'channel' || chatType === 'group' || chatType === 'supergroup') {
+        const chunkSize = 20; // إرسال 20 سؤالًا في كل دفعة
+        const delay = 1000; // الانتظار لمدة ثانية واحدة بين كل دفعة
+
+        for (let i = 0; i < questions.length; i += chunkSize) {
+            const chunk = questions.slice(i, i + chunkSize);
+            
+            const promises = chunk.map(q => {
+                if (q.question.length > 255) {
+                    return bot.sendMessage(targetChatId, q.question)
+                        .then(() => bot.sendPoll(targetChatId, '.', q.options, {
+                            type: 'quiz',
+                            correct_option_id: q.correctAnswerIndex,
+                            is_anonymous: true
+                        }));
+                } else {
+                    return bot.sendPoll(targetChatId, q.question, q.options, {
+                        type: 'quiz',
+                        correct_option_id: q.correctAnswerIndex,
+                        is_anonymous: true
+                    });
+                }
             });
-        } else {
-            await bot.sendPoll(targetChatId, q.question, q.options, {
-                type: 'quiz',
-                correct_option_id: q.correctAnswerIndex,
-                is_anonymous: true
-            });
+            await Promise.all(promises);
+            if (i + chunkSize < questions.length) {
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
+    } else {
+        // الطريقة العادية: للمحادثات الخاصة
+        for (const q of questions) {
+            if (q.question.length > 255) {
+                await bot.sendMessage(targetChatId, q.question);
+                await bot.sendPoll(targetChatId, '.', q.options, {
+                    type: 'quiz',
+                    correct_option_id: q.correctAnswerIndex,
+                    is_anonymous: true
+                });
+            } else {
+                await bot.sendPoll(targetChatId, q.question, q.options, {
+                    type: 'quiz',
+                    correct_option_id: q.correctAnswerIndex,
+                    is_anonymous: true
+                });
+            }
         }
     }
 }
@@ -96,7 +129,7 @@ module.exports = async (req, res) => {
             if (data === 'send_here') {
                 await bot.answerCallbackQuery(callbackQuery.id, { text: 'جاري إرسال الأسئلة...' });
                 await bot.editMessageText(`✅ تم إرسال ${userState[userId].questions.length} سؤالًا بنجاح.`, { chat_id: chatId, message_id: messageId });
-                await sendPolls(chatId, userState[userId].questions);
+                await sendPolls(chatId, userState[userId].questions, 'private');
                 delete userState[userId];
             } else if (data === 'send_to_channel') {
                 userState[userId].awaiting = 'channel_id';
@@ -104,10 +137,10 @@ module.exports = async (req, res) => {
                 await bot.editMessageText('يرجى إرسال معرف (ID) القناة أو المجموعة الآن.\n(مثال: @username أو -100123456789)', { chat_id: chatId, message_id: messageId });
             } else if (data === 'confirm_send') {
                  if (userState[userId] && userState[userId].awaiting === 'send_confirmation') {
-                    const { questions, targetChatId, targetChatTitle } = userState[userId];
+                    const { questions, targetChatId, targetChatTitle, targetChatType } = userState[userId];
                     await bot.answerCallbackQuery(callbackQuery.id);
                     await bot.editMessageText(`✅ جاري إرسال ${questions.length} سؤالًا إلى "${targetChatTitle}"...`, { chat_id: chatId, message_id: messageId });
-                    await sendPolls(targetChatId, questions);
+                    await sendPolls(targetChatId, questions, targetChatType);
                     await bot.sendMessage(chatId, '👍 تم الإرسال بنجاح!');
                     delete userState[userId];
                  }
@@ -139,7 +172,7 @@ module.exports = async (req, res) => {
                     
                     const botInfo = await bot.getMe();
                     const botMember = await bot.getChatMember(targetChatId, botInfo.id);
-                    const chatType = chatInfo.type === 'channel' ? 'قناة' : 'مجموعة';
+                    const chatType = chatInfo.type;
 
                     let messageText = `*تم العثور على المعلومات التالية:*\n\n`;
                     messageText += `👤 *الاسم:* ${chatInfo.title}\n`;
@@ -170,6 +203,7 @@ module.exports = async (req, res) => {
                         userState[userId].awaiting = 'send_confirmation';
                         userState[userId].targetChatId = targetChatId;
                         userState[userId].targetChatTitle = chatInfo.title;
+                        userState[userId].targetChatType = chatType;
 
                         messageText += `\n*النتيجة: الصلاحيات كافية.*\nهل تريد بالتأكيد إرسال ${questions.length} سؤالًا؟`;
 
@@ -196,23 +230,23 @@ module.exports = async (req, res) => {
             }
         }
 
-    } catch (error)
- {
+    } catch (error) {
         console.error("General error:", error);
     }
     res.status(200).send('OK');
 };
 
-// ... (دالة extractQuestions تبقى كما هي هنا)
+
+// --- تم تحديث هذه الدالة لدعم الهندية ---
 function extractQuestions(text) {
     const questions = [];
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\f/g, '\n').replace(/\u2028|\u2029/g, '\n');
     const lines = text.split('\n').map(l => l.trim());
     let i = 0;
-    const letterOptionPatterns = [/^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i, /^\s*\[([A-Z])\]\s*(.+)/i, /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i, /^\s*([A-Z])\s+(.+)/i,];
-    const numberOptionPatterns = [/^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/, /^\s*(\d+)\s+(.+)/];
+    const letterOptionPatterns = [/^\s*([A-Zक-ह])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i,/^\s*\[([A-Zक-ह])\]\s*(.+)/i,/^\s*\(\s*([A-Zक-ह])\s*\)\s*(.+)/i,/^\s*([A-Zक-ह])\s+(.+)/i,];
+    const numberOptionPatterns = [/^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/,/^\s*(\d+)\s+(.+)/];
     const optionPatterns = [...letterOptionPatterns, ...numberOptionPatterns];
-    const answerPatterns = [/^(Answer|Correct Answer|Solution|Ans|Sol):?/i];
+    const answerPatterns = [/^(Answer|Correct Answer|Solution|Ans|Sol|उत्तर):?/i];
     function findMatch(line, patterns) { for (const pattern of patterns) { const match = line.match(pattern); if (match) return match; } return null; }
     function areOptionsConsistent(optionLines) { if (optionLines.length === 0) return false; let style = null; for (const line of optionLines) { let currentStyle = null; if (findMatch(line, letterOptionPatterns)) { currentStyle = 'letters'; } else if (findMatch(line, numberOptionPatterns)) { currentStyle = 'numbers'; } else { return false; } if (!style) { style = currentStyle; } else if (style !== currentStyle) { return false; } } return true; }
     while (i < lines.length) {
@@ -249,13 +283,13 @@ function extractQuestions(text) {
                 const answerMatch = findMatch(lines[i + 1], answerPatterns);
                 if (answerMatch) {
                     const answerLine = lines[i + 1];
-                    let answerText = answerLine.replace(/^(Answer|Correct Answer|Solution|Ans|Sol):?/i, '').trim();
+                    let answerText = answerLine.replace(/^(Answer|Correct Answer|Solution|Ans|Sol|उत्तर):?/i, '').trim();
                     let correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === answerText.toLowerCase());
                     if (correctIndex === -1) {
-                        const letterMatch = answerText.match(/^[A-Z]|\d/i);
+                        const letterMatch = answerText.match(/^[A-Zक-ह]|\d/i);
                         if (letterMatch) {
                             const letterOrNumber = letterMatch[0].toUpperCase();
-                            const index = isNaN(parseInt(letterOrNumber)) ? letterOrNumber.charCodeAt(0) - 'A'.charCodeAt(0) : parseInt(letterOrNumber) - 1;
+                            const index = isNaN(parseInt(letterOrNumber)) ? (letterOrNumber >= 'A' && letterOrNumber <= 'Z' ? letterOrNumber.charCodeAt(0) - 'A'.charCodeAt(0) : 'कखगघङचछजझञटठडढणतथदधनपफबभम'.indexOf(letterOrNumber)) : parseInt(letterOrNumber) - 1;
                             if (index >= 0 && index < currentQuestion.options.length) { correctIndex = index; }
                         }
                     }
