@@ -12,21 +12,55 @@ const bot = new TelegramBot(token);
 const userState = {};
 
 // دالة مساعدة لإرسال الأسئلة
-async function sendPolls(targetChatId, questions) {
-    for (const q of questions) {
-        if (q.question.length > 255) {
-            await bot.sendMessage(targetChatId, q.question);
-            await bot.sendPoll(targetChatId, '.', q.options, {
-                type: 'quiz',
-                correct_option_id: q.correctAnswerIndex,
-                is_anonymous: true
+// دالة مساعدة لإرسال الأسئلة (النسخة الذكية والسريعة)
+async function sendPolls(targetChatId, questions, chatType = 'private') {
+    
+    // الطريقة السريعة: للقنوات والمجموعات
+    if (chatType === 'channel' || chatType === 'group' || chatType === 'supergroup') {
+        const chunkSize = 20; // إرسال 20 سؤالًا في كل دفعة
+        const delay = 1000; // الانتظار لمدة ثانية واحدة بين كل دفعة
+
+        for (let i = 0; i < questions.length; i += chunkSize) {
+            const chunk = questions.slice(i, i + chunkSize);
+            
+            const promises = chunk.map(q => {
+                if (q.question.length > 255) {
+                    return bot.sendMessage(targetChatId, q.question)
+                        .then(() => bot.sendPoll(targetChatId, '.', q.options, {
+                            type: 'quiz',
+                            correct_option_id: q.correctAnswerIndex,
+                            is_anonymous: true
+                        }));
+                } else {
+                    return bot.sendPoll(targetChatId, q.question, q.options, {
+                        type: 'quiz',
+                        correct_option_id: q.correctAnswerIndex,
+                        is_anonymous: true
+                    });
+                }
             });
-        } else {
-            await bot.sendPoll(targetChatId, q.question, q.options, {
-                type: 'quiz',
-                correct_option_id: q.correctAnswerIndex,
-                is_anonymous: true
-            });
+            await Promise.all(promises);
+            if (i + chunkSize < questions.length) {
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
+    } else {
+        // الطريقة العادية: للمحادثات الخاصة
+        for (const q of questions) {
+            if (q.question.length > 255) {
+                await bot.sendMessage(targetChatId, q.question);
+                await bot.sendPoll(targetChatId, '.', q.options, {
+                    type: 'quiz',
+                    correct_option_id: q.correctAnswerIndex,
+                    is_anonymous: true
+                });
+            } else {
+                await bot.sendPoll(targetChatId, q.question, q.options, {
+                    type: 'quiz',
+                    correct_option_id: q.correctAnswerIndex,
+                    is_anonymous: true
+                });
+            }
         }
     }
 }
