@@ -77,23 +77,14 @@ function extractQuestions(text) {
     const lines = text.split('\n').map(l => l.trim());
     let i = 0;
 
-    // ✅ أنماط بداية السؤال
-    const questionPatterns = [
-        /^\s*(q|question)\s*\d+\s*[:\s-]?\s*(.+)/i,
-        /^\d+\.\s(.+)/,
-        /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify|Explain|Define|Describe|List|State|Write|Give)\s(.+)/i,
-        /^(.+)\?$/,
-        /^(.+):$/
-    ];
-
     // ✅ أنماط الخيارات
     const optionPatterns = [
-        /^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i,
-        /^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/,
-        /^\s*\[([A-Z])\]\s*(.+)/i,
-        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i,
-        /^\s*([A-Z])\s+(.+)/i,
-        /^\s*(\d+)\s+(.+)/
+        /^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i, 
+        /^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/,   
+        /^\s*\[([A-Z])\]\s*(.+)/i,                 
+        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i,           
+        /^\s*([A-Z])\s+(.+)/i,                     
+        /^\s*(\d+)\s+(.+)/                         
     ];
 
     // ✅ أنماط الإجابة
@@ -135,101 +126,99 @@ function extractQuestions(text) {
             continue;
         }
 
-        const questionMatch = findMatch(line, questionPatterns);
-        if (questionMatch) {
-            let questionText = questionMatch[0].trim();
-            let potentialOptionsIndex = -1;
+        // ✅ اعتبر أي سطر بداية محتملة لسؤال
+        let questionText = line.trim();
+        let potentialOptionsIndex = -1;
 
-            // ✅ اجمع النصوص بين بداية السؤال وأول اختيار أو إجابة
-            let j = i + 1;
-            while (j < lines.length) {
-                const currentLine = lines[j].trim();
+        // ✅ اجمع النصوص لحد أول اختيار أو إجابة
+        let j = i + 1;
+        while (j < lines.length) {
+            const currentLine = lines[j].trim();
 
-                if (!currentLine) { // تجاهل الأسطر الفاضية
-                    j++;
-                    continue;
-                }
+            if (!currentLine) {
+                j++;
+                continue;
+            }
 
-                if (findMatch(currentLine, optionPatterns) || findMatch(currentLine, answerPatterns)) {
-                    potentialOptionsIndex = findMatch(currentLine, optionPatterns) ? j : -1;
+            if (findMatch(currentLine, optionPatterns) || findMatch(currentLine, answerPatterns)) {
+                potentialOptionsIndex = findMatch(currentLine, optionPatterns) ? j : -1;
+                break;
+            }
+
+            questionText += ' ' + currentLine;
+            j++;
+        }
+
+        // ✅ لو لقينا بداية اختيارات
+        if (potentialOptionsIndex !== -1) {
+            const currentQuestion = {
+                question: questionText,
+                options: [],
+                correctAnswerIndex: undefined
+            };
+
+            // ✅ اجمع الاختيارات لحد ما يقابل إجابة
+            let k = potentialOptionsIndex;
+            const optionLines = [];
+            while (k < lines.length) {
+                const optLine = lines[k].trim();
+                if (findMatch(optLine, answerPatterns)) {
                     break;
                 }
 
-                questionText += ' ' + currentLine;
-                j++;
+                const optionMatch = findMatch(optLine, optionPatterns);
+                if (optionMatch) {
+                    optionLines.push(optLine);
+                    const optionText = optionMatch[2] ? optionMatch[2].trim() : optionMatch[1].trim();
+                    currentQuestion.options.push(optionText);
+                    k++;
+                } else {
+                    break;
+                }
             }
 
-            // ✅ لو لقينا بداية للخيارات
-            if (potentialOptionsIndex !== -1) {
-                const currentQuestion = {
-                    question: questionText,
-                    options: [],
-                    correctAnswerIndex: undefined
-                };
+            // ✅ تحقق من تناسق الاختيارات
+            if (!areOptionsConsistent(optionLines)) {
+                // 👇 تجاهل بداية السؤال الحالية فقط
+                i = i + 1;
+                continue;
+            }
 
-                // ✅ اجمع الاختيارات لحد ما يقابل إجابة
-                let k = potentialOptionsIndex;
-                const optionLines = [];
-                while (k < lines.length) {
-                    const optLine = lines[k].trim();
-                    if (findMatch(optLine, answerPatterns)) {
-                        break; // وقف عند الإجابة
-                    }
+            i = k - 1;
 
-                    const optionMatch = findMatch(optLine, optionPatterns);
-                    if (optionMatch) {
-                        optionLines.push(optLine);
-                        const optionText = optionMatch[2] ? optionMatch[2].trim() : optionMatch[1].trim();
-                        currentQuestion.options.push(optionText);
-                        k++;
-                    } else {
-                        break;
-                    }
-                }
+            // ✅ دور على الإجابة
+            if (i + 1 < lines.length) {
+                const answerMatch = findMatch(lines[i + 1], answerPatterns);
+                if (answerMatch) {
+                    const answerLine = lines[i + 1];
+                    let answerText = answerLine.replace(/^(Answer|Correct Answer|Solution|Ans|Sol):?/i, '').trim();
 
-                // ✅ تحقق من تناسق الاختيارات
-                if (!areOptionsConsistent(optionLines)) {
-                    console.log("📌 تجاهل سؤال (اختيارات غير متناسقة):", questionText);
-                    i++;
-                    continue;
-                }
+                    let correctIndex = currentQuestion.options.findIndex(
+                        opt => opt.toLowerCase() === answerText.toLowerCase()
+                    );
 
-                i = k - 1;
-
-                // ✅ دور على الإجابة
-                if (i + 1 < lines.length) {
-                    const answerMatch = findMatch(lines[i + 1], answerPatterns);
-                    if (answerMatch) {
-                        const answerLine = lines[i + 1];
-                        let answerText = answerLine.replace(/^(Answer|Correct Answer|Solution|Ans|Sol):?/i, '').trim();
-
-                        let correctIndex = currentQuestion.options.findIndex(
-                            opt => opt.toLowerCase() === answerText.toLowerCase()
-                        );
-
-                        if (correctIndex === -1) {
-                            const letterMatch = answerText.match(/^[A-Z]|\d/i);
-                            if (letterMatch) {
-                                const letterOrNumber = letterMatch[0].toUpperCase();
-                                const index = isNaN(parseInt(letterOrNumber))
-                                    ? letterOrNumber.charCodeAt(0) - 'A'.charCodeAt(0)
-                                    : parseInt(letterOrNumber) - 1;
-                                if (index >= 0 && index < currentQuestion.options.length) {
-                                    correctIndex = index;
-                                }
+                    if (correctIndex === -1) {
+                        const letterMatch = answerText.match(/^[A-Z]|\d/i);
+                        if (letterMatch) {
+                            const letterOrNumber = letterMatch[0].toUpperCase();
+                            const index = isNaN(parseInt(letterOrNumber))
+                                ? letterOrNumber.charCodeAt(0) - 'A'.charCodeAt(0)
+                                : parseInt(letterOrNumber) - 1;
+                            if (index >= 0 && index < currentQuestion.options.length) {
+                                correctIndex = index;
                             }
                         }
+                    }
 
-                        if (correctIndex !== -1) {
-                            currentQuestion.correctAnswerIndex = correctIndex;
-                            i++;
-                        }
+                    if (correctIndex !== -1) {
+                        currentQuestion.correctAnswerIndex = correctIndex;
+                        i++;
                     }
                 }
+            }
 
-                if (currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
-                    questions.push(currentQuestion);
-                }
+            if (currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
+                questions.push(currentQuestion);
             }
         }
 
