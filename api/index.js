@@ -128,83 +128,82 @@ module.exports = async (req, res) => {
             if (userState[userId] && userState[userId].awaiting === 'channel_id') {
                 const targetChatId = text.trim();
                 const questions = userState[userId].questions;
-                let chatInfo;
-
-                // --- الخطوة 1: محاولة العثور على الشات ---
-                try {
-                    chatInfo = await bot.getChat(targetChatId);
-                } catch (error) {
-                    console.error("Error in getChat:", error.response.body);
-                    await bot.sendMessage(chatId, '❌ خطأ فادح! لم أتمكن من العثور على هذا الشات. تأكد 100% أن المعرف صحيح وأن البوت عضو فيه.');
-                    delete userState[userId];
-                    return;
-                }
-
-                // --- الخطوة 2: التحقق من نوع الشات ---
-                if (chatInfo.type === 'private') {
-                    await bot.sendMessage(chatId, '❌ لا يمكن الإرسال إلى المستخدمين. يرجى استخدام معرف قناة أو مجموعة.');
-                    delete userState[userId];
-                    return;
-                }
-
-                const botInfo = await bot.getMe();
-                const botMember = await bot.getChatMember(targetChatId, botInfo.id);
-
-                // --- الخطوة 3: بناء تقرير المعلومات والصلاحيات ---
-                const chatType = chatInfo.type === 'channel' ? 'قناة' : 'مجموعة';
-                let infoText = `*تم العثور على المعلومات التالية:*\n\n`;
-                infoText += `👤 *الاسم:* ${chatInfo.title}\n`;
-                infoText += `🆔 *المعرف:* \`${chatInfo.id}\`\n`;
-                infoText += `*النوع:* ${chatType}\n`;
-
-                let canProceed = false;
-
-                if (botMember.status === 'administrator' || botMember.status === 'creator') {
-                    const membersCount = await bot.getChatMembersCount(targetChatId);
-                    infoText += `👥 *عدد الأعضاء:* ${membersCount}\n\n`;
-
-                    const canPost = botMember.can_post_messages;
-                    const canSendPolls = botMember.can_send_polls;
-
-                    infoText += `*تقرير الصلاحيات:*\n`;
-                    infoText += `▫️ *حالة البوت:* مشرف (Admin)\n`;
-                    infoText += `▫️ *إرسال الرسائل:* ${canPost ? '✅ يستطيع' : '❌ لا يستطيع'}\n`;
-                    infoText += `▫️ *إرسال الاستطلاعات:* ${canSendPolls ? '✅ يستطيع' : '❌ لا يستطيع'}\n`;
-
-                    if (canPost && canSendPolls) {
-                        canProceed = true;
-                    }
-                } else {
-                    infoText += `\n*تقرير الصلاحيات:*\n`;
-                    infoText += `▫️ *حالة البوت:* مجرد عضو\n`;
-                    infoText += `▫️ *يحتاج أن يكون مشرفًا لإرسال الأسئلة.*\n`;
-                }
                 
-                await bot.sendMessage(chatId, infoText, { parse_mode: 'Markdown' });
+                try {
+                    const chatInfo = await bot.getChat(targetChatId);
+                    
+                    if (chatInfo.type === 'private') {
+                        await bot.sendMessage(chatId, '❌ لا يمكن الإرسال إلى المستخدمين. يرجى استخدام معرف قناة أو مجموعة.');
+                        delete userState[userId];
+                        return;
+                    }
+                    
+                    const botInfo = await bot.getMe();
+                    const botMember = await bot.getChatMember(targetChatId, botInfo.id);
+                    const chatType = chatInfo.type === 'channel' ? 'قناة' : 'مجموعة';
 
-                // --- الخطوة 4: قرار المتابعة بناءً على الصلاحيات ---
-                if (canProceed) {
-                    userState[userId].awaiting = 'send_confirmation';
-                    userState[userId].targetChatId = targetChatId;
-                    userState[userId].targetChatTitle = chatInfo.title;
+                    let infoText = `*تم العثور على المعلومات التالية:*\n\n`;
+                    infoText += `👤 *الاسم:* ${chatInfo.title}\n`;
+                    infoText += `🆔 *المعرف:* \`${chatInfo.id}\`\n`;
+                    infoText += `*النوع:* ${chatType}\n`;
 
-                    const confirmationKeyboard = {
-                        inline_keyboard: [[{ text: '✅ تأكيد الإرسال', callback_data: 'confirm_send' }, { text: '❌ إلغاء', callback_data: 'cancel_send' }]]
-                    };
-                    await bot.sendMessage(chatId, `هل أنت متأكد من أنك تريد إرسال ${questions.length} سؤالًا إلى "${chatInfo.title}"؟`, {
-                        reply_markup: confirmationKeyboard
-                    });
-                } else {
-                    await bot.sendMessage(chatId, '⚠️ لا يمكن المتابعة. الصلاحيات غير كافية كما هو موضح في التقرير أعلاه.');
+                    let canProceed = false;
+
+                    if (botMember.status === 'administrator' || botMember.status === 'creator') {
+                        const membersCount = await bot.getChatMembersCount(targetChatId);
+                        infoText += `👥 *عدد الأعضاء:* ${membersCount}\n\n`;
+
+                        const canPost = botMember.can_post_messages;
+                        const canSendPolls = botMember.can_send_polls;
+                        
+                        infoText += `*تقرير الصلاحيات:*\n`;
+                        infoText += `▫️ *حالة البوت:* مشرف (Admin)\n`;
+                        infoText += `▫️ *إرسال الرسائل:* ${canPost ? '✅ يستطيع' : '❌ لا يستطيع'}\n`;
+                        infoText += `▫️ *إرسال الاستطلاعات:* ${canSendPolls ? '✅ يستطيع' : '❌ لا يستطيع'}\n`;
+                        
+                        if (canPost && canSendPolls) {
+                            canProceed = true;
+                        }
+                    } else {
+                        infoText += `\n*تقرير الصلاحيات:*\n`;
+                        infoText += `▫️ *حالة البوت:* مجرد عضو\n`;
+                        infoText += `▫️ *يحتاج أن يكون مشرفًا لإرسال الأسئلة.*\n`;
+                    }
+                    
+                    await bot.sendMessage(chatId, infoText, { parse_mode: 'Markdown' });
+
+                    if (canProceed) {
+                        userState[userId].awaiting = 'send_confirmation';
+                        userState[userId].targetChatId = targetChatId;
+                        userState[userId].targetChatTitle = chatInfo.title;
+
+                        const confirmationKeyboard = {
+                            inline_keyboard: [[{ text: '✅ تأكيد الإرسال', callback_data: 'confirm_send' }, { text: '❌ إلغاء', callback_data: 'cancel_send' }]]
+                        };
+                        await bot.sendMessage(chatId, `هل أنت متأكد من أنك تريد إرسال ${questions.length} سؤالًا إلى "${chatInfo.title}"؟`, {
+                            reply_markup: confirmationKeyboard
+                        });
+                    } else {
+                        await bot.sendMessage(chatId, '⚠️ لا يمكن المتابعة. الصلاحيات غير كافية كما هو موضح في التقرير أعلاه.');
+                        delete userState[userId];
+                    }
+
+                } catch (error) {
+                    // --- الجزء الذي تم إصلاحه ---
+                    // هذا الجزء الآن يعالج الخطأ بأمان دون أن يتوقف
+                    console.error("An error occurred during chat validation:", error.message || error);
+                    await bot.sendMessage(chatId, '❌ حدث خطأ أثناء التحقق من الشات. يرجى التأكد من صحة المعرف وأن البوت عضو في القناة/المجموعة.');
                     delete userState[userId];
                 }
             }
         }
+
     } catch (error) {
         console.error("General error:", error);
     }
     res.status(200).send('OK');
 };
+
 
 // ... (دالة extractQuestions تبقى كما هي هنا)
 function extractQuestions(text) {
