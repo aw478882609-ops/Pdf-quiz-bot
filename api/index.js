@@ -79,21 +79,21 @@ function extractQuestions(text) {
 
     // ✅ أنماط بداية السؤال
     const questionPatterns = [
-        /^\s*(q|question)\s*\d+\s*[:\s-]?\s*(.+)/i,  // Q1: أو Question 1 -
-        /^\d+\.\s(.+)/,                              // 1. نص
-        /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify|Explain|Define|Describe|List|State|Write|Give)\s(.+)/i, // كلمات مفتاحية
-        /^(.+)\?$/,                                  // أي جملة منتهية بـ ؟
-        /^(.+):$/                                    // أي جملة منتهية بـ :
+        /^\s*(q|question)\s*\d+\s*[:\s-]?\s*(.+)/i,  
+        /^\d+\.\s(.+)/,                              
+        /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify|Explain|Define|Describe|List|State|Write|Give)\s(.+)/i, 
+        /^(.+)\?$/,                                  
+        /^(.+):$/                                    
     ];
 
     // ✅ أنماط الخيارات
     const optionPatterns = [
-        /^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i, // A) Text
-        /^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/,   // 1) Text
-        /^\s*\[([A-Z])\]\s*(.+)/i,                 // [A] Text
-        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i,           // (A) Text
-        /^\s*([A-Z])\s+(.+)/i,                     // A Text
-        /^\s*(\d+)\s+(.+)/                         // 1 Text
+        /^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i, 
+        /^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/,   
+        /^\s*\[([A-Z])\]\s*(.+)/i,                 
+        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i,           
+        /^\s*([A-Z])\s+(.+)/i,                     
+        /^\s*(\d+)\s+(.+)/                         
     ];
 
     // ✅ أنماط الإجابة
@@ -138,7 +138,7 @@ function extractQuestions(text) {
         const questionMatch = findMatch(line, questionPatterns);
 
         if (questionMatch) {
-            // ✅ اجمع نص السؤال لحد أول اختيار
+            // ✅ اجمع نص السؤال لحد أول اختيار أو إجابة
             let questionText = questionMatch[0].trim();
             let m = i + 1;
             while (m < lines.length) {
@@ -179,7 +179,7 @@ function extractQuestions(text) {
                 const optionLines = [];
                 while (k < lines.length) {
                     if (findMatch(lines[k], answerPatterns)) {
-                        break; // وقف عند الإجابة
+                        break; 
                     }
                     const optionMatch = findMatch(lines[k], optionPatterns);
                     if (optionMatch) {
