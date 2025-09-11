@@ -60,11 +60,16 @@ module.exports = async (req, res) => {
 function extractQuestions(text) {
     const questions = [];
 
-    // 🧹 تنظيف السطور من الرموز المخفية
-    const lines = text
-        .split('\n')
-        .map(line => line.replace(/[\r\f\t\u200B-\u200D\uFEFF]/g, '').trim());
+    // 🧹 تنظيف النص قبل التقسيم
+    text = text
+        .replace(/\r\n/g, '\n')              // توحيد CRLF → LF
+        .replace(/\r/g, '\n')                // توحيد CR → LF
+        .replace(/\f/g, '\n')                // إزالة page breaks
+        .replace(/\u2028|\u2029/g, '\n')     // إزالة line separators
+        .replace(/[ \t]+$/gm, '')            // إزالة المسافات في نهاية الأسطر
+        .replace(/\n\s*\n+/g, '\n\n');       // أي أسطر فارغة متتالية → سطر واحد
 
+    const lines = text.split('\n').map(l => l.trim());
     let i = 0;
 
     function isBlank(line) {
@@ -105,7 +110,7 @@ function extractQuestions(text) {
         if (questionMatch) {
             let questionText = questionMatch[0].trim();
 
-            // ✅ لو السطر اللي بعد بداية السؤال فاضي → ده عنوان مش سؤال
+            // ✅ لو السطر اللي بعد بداية السؤال فاضي → عنوان
             if (i + 1 < lines.length && isBlank(lines[i + 1])) {
                 console.log("📌 تجاهل العنوان:", questionText);
                 i++;
@@ -115,7 +120,6 @@ function extractQuestions(text) {
             let potentialOptionsIndex = -1;
             let blankLineBetween = false;
 
-            // ابحث عن بداية الخيارات أو سطر فاضي
             let j = i + 1;
             while (j < lines.length) {
                 if (isBlank(lines[j])) {
@@ -129,7 +133,6 @@ function extractQuestions(text) {
                 j++;
             }
 
-            // ✅ لو في سطر فاضي بين السؤال والاختيارات → تجاهل
             if (blankLineBetween) {
                 console.log("📌 تجاهل العنوان بسبب سطر فاضي:", questionText);
                 i++;
@@ -137,10 +140,9 @@ function extractQuestions(text) {
             }
 
             if (potentialOptionsIndex !== -1) {
-                // اجمع النص بين بداية السؤال وبداية الخيارات
                 for (let k = i + 1; k < potentialOptionsIndex; k++) {
                     if (!isBlank(lines[k])) {
-                        questionText += ' ' + lines[k].trim();
+                        questionText += ' ' + lines[k];
                     }
                 }
 
@@ -150,7 +152,6 @@ function extractQuestions(text) {
                     correctAnswerIndex: undefined
                 };
 
-                // اجمع الاختيارات
                 let k = potentialOptionsIndex;
                 while (k < lines.length) {
                     const optionMatch = findMatch(lines[k], optionPatterns);
@@ -165,7 +166,6 @@ function extractQuestions(text) {
 
                 i = k - 1;
 
-                // دور على الإجابة
                 if (i + 1 < lines.length) {
                     const answerMatch = findMatch(lines[i + 1], answerPatterns);
                     if (answerMatch) {
@@ -205,3 +205,4 @@ function extractQuestions(text) {
 
     return questions;
 }
+
