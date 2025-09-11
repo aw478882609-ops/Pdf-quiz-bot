@@ -12,6 +12,7 @@ const bot = new TelegramBot(token);
 const userState = {};
 
 // دالة مساعدة لإرسال الأسئلة
+// دالة مساعدة لإرسال الأسئلة (النسخة المحدثة)
 async function sendPolls(targetChatId, questions) {
     for (const q of questions) {
         if (q.question.length > 255) {
@@ -19,13 +20,13 @@ async function sendPolls(targetChatId, questions) {
             await bot.sendPoll(targetChatId, '.', q.options, {
                 type: 'quiz',
                 correct_option_id: q.correctAnswerIndex,
-                is_anonymous: false
+                is_anonymous: true // <--- تم التعديل هنا
             });
         } else {
             await bot.sendPoll(targetChatId, q.question, q.options, {
                 type: 'quiz',
                 correct_option_id: q.correctAnswerIndex,
-                is_anonymous: false
+                is_anonymous: true // <--- تم التعديل هنا
             });
         }
     }
