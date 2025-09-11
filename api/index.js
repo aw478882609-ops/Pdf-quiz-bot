@@ -59,12 +59,16 @@ module.exports = async (req, res) => {
 
 function extractQuestions(text) {
     const questions = [];
-    const lines = text.split('\n').map(line => line.trim());
+
+    // 🧹 تنظيف السطور من الرموز المخفية
+    const lines = text
+        .split('\n')
+        .map(line => line.replace(/[\r\f\t\u200B-\u200D\uFEFF]/g, '').trim());
+
     let i = 0;
 
-    // ✅ دالة تحدد إذا كان السطر "فاضي" حتى لو فيه مسافات أو رموز خفية
     function isBlank(line) {
-        return !line || line.replace(/[\s\u200B-\u200D\uFEFF\r\f]/g, '').length === 0;
+        return !line || line.length === 0;
     }
 
     const questionPatterns = [
@@ -103,6 +107,7 @@ function extractQuestions(text) {
 
             // ✅ لو السطر اللي بعد بداية السؤال فاضي → ده عنوان مش سؤال
             if (i + 1 < lines.length && isBlank(lines[i + 1])) {
+                console.log("📌 تجاهل العنوان:", questionText);
                 i++;
                 continue;
             }
@@ -124,8 +129,9 @@ function extractQuestions(text) {
                 j++;
             }
 
-            // ✅ لو لقيت سطر فاضي بين السؤال والاختيارات → تجاهل (عنوان)
+            // ✅ لو في سطر فاضي بين السؤال والاختيارات → تجاهل
             if (blankLineBetween) {
+                console.log("📌 تجاهل العنوان بسبب سطر فاضي:", questionText);
                 i++;
                 continue;
             }
@@ -157,9 +163,9 @@ function extractQuestions(text) {
                     }
                 }
 
-                i = k - 1; // المؤشر عند آخر اختيار
+                i = k - 1;
 
-                // دور على الإجابة بعد الاختيارات
+                // دور على الإجابة
                 if (i + 1 < lines.length) {
                     const answerMatch = findMatch(lines[i + 1], answerPatterns);
                     if (answerMatch) {
@@ -183,7 +189,7 @@ function extractQuestions(text) {
 
                         if (correctIndex !== -1) {
                             currentQuestion.correctAnswerIndex = correctIndex;
-                            i++; // عدي سطر الإجابة
+                            i++;
                         }
                     }
                 }
@@ -199,4 +205,3 @@ function extractQuestions(text) {
 
     return questions;
 }
-
