@@ -175,88 +175,173 @@ module.exports = async (req, res) => {
     res.status(200).send('OK');
 };
 
-// ... دالة extractQuestions تبقى كما هي ...
 function extractQuestions(text) {
-    // الخطوة 1: توحيد فواصل الأسطر المختلفة
+    // الخطوة 1: توحيد وتنظيف النص
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\f/g, '\n').replace(/\u2028|\u2029/g, '\n');
-
-    // الخطوة 2 (الحل الجديد): إزالة الأسطر الفارغة المتتالية باستبدالها بسطر واحد
     text = text.replace(/\n{2,}/g, '\n');
 
     const lines = text.split('\n').map(l => l.trim());
-    let i = 0;
     const questions = [];
-    const letterOptionPatterns = [/^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i, /^\s*\[([A-Z])\]\s*(.+)/i, /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i, /^\s*([A-Z])\s+(.+)/i,];
-    const numberOptionPatterns = [/^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/, /^\s*(\d+)\s+(.+)/];
-    const optionPatterns = [...letterOptionPatterns, ...numberOptionPatterns];
-    const answerPatterns = [/^(Answer|Correct Answer|Solution|Ans|Sol):?/i];
+    let i = 0;
+
+    // [تجميع] كل الأنماط الشاملة للأسئلة والخيارات
+    const questionPatterns = [/^(Q|Question|Problem|Quiz|السؤال)?\s*\d+[\s\.\)\]]/i];
+    
+    const letterOptionPatterns = [
+        /^\s*([A-Z])\s*-\s*(.+)/i,                  // يدعم "A -"
+        /^\s*[\(\[\{]([A-Z])[\)\]\}]\s*(.+)/i,     // يدعم "(A)" أو "[B]" أو "{C}"
+        /^\s*([A-Z])[\.\)]\s*(.+)/i,                // النمط الأساسي "A." أو "B)"
+    ];
+    const numberOptionPatterns = [
+        /^\s*(\d+)\s*-\s*(.+)/,
+        /^\s*[\(\[\{](\d+)[\)\]\}]\s*(.+)/,
+        /^\s*(\d+)[\.\)]\s*(.+)/,
+    ];
+    const romanOptionPatterns = [
+        /^\s*([IVXLCDM]+)[\.\)]\s*(.+)/i,           // يدعم الترقيم الروماني "I."
+    ];
+    // دمج كل أنماط الخيارات معًا
+    const optionPatterns = [...letterOptionPatterns, ...numberOptionPatterns, ...romanOptionPatterns];
+
+    const answerPatterns = [/^(Answer|Correct Answer|Solution|Ans|Sol)\s*[:\-]?\s*/i];
 
     function findMatch(line, patterns) { for (const pattern of patterns) { const match = line.match(pattern); if (match) return match; } return null; }
 
-    function areOptionsConsistent(optionLines) { if (optionLines.length === 0) return false; let style = null; for (const line of optionLines) { let currentStyle = null; if (findMatch(line, letterOptionPatterns)) { currentStyle = 'letters'; } else if (findMatch(line, numberOptionPatterns)) { currentStyle = 'numbers'; } else { return false; } if (!style) { style = currentStyle; } else if (style !== currentStyle) { return false; } } return true; }
+    // [تطوير] دالة جديدة للتحقق من النوع والتسلسل لجميع الأنماط
+    function validateOptionsSequence(optionLines) {
+        if (optionLines.length < 2) return true;
 
+        let style = null;
+        let lastValue = null;
+
+        // دالة مساعدة لتحويل الأرقام الرومانية إلى أرقام عادية
+        function romanToNumber(roman) {
+            const map = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
+            let num = 0;
+            for (let i = 0; i < roman.length; i++) {
+                const current = map[roman[i]];
+                const next = map[roman[i + 1]];
+                if (next > current) {
+                    num -= current;
+                } else {
+                    num += current;
+                }
+            }
+            return num;
+        }
+
+        for (let j = 0; j < optionLines.length; j++) {
+            const line = optionLines[j];
+            let currentStyle = null;
+            let currentValue = null;
+            let identifier = '';
+
+            if (findMatch(line, numberOptionPatterns)) {
+                currentStyle = 'numbers';
+                identifier = findMatch(line, numberOptionPatterns)[1];
+                currentValue = parseInt(identifier, 10);
+            } else if (findMatch(line, letterOptionPatterns)) {
+                currentStyle = 'letters';
+                identifier = findMatch(line, letterOptionPatterns)[1].toUpperCase();
+                currentValue = identifier.charCodeAt(0);
+            } else if (findMatch(line, romanOptionPatterns)) {
+                currentStyle = 'roman';
+                identifier = findMatch(line, romanOptionPatterns)[1].toUpperCase();
+                currentValue = romanToNumber(identifier);
+            } else {
+                return false; // ليس خيارًا صالحًا
+            }
+
+            if (j === 0) {
+                // تحديد النوع والقيمة الأولية من أول خيار
+                style = currentStyle;
+                lastValue = currentValue;
+            } else {
+                // التحقق من تطابق النوع ومن التسلسل
+                if (currentStyle !== style || currentValue !== lastValue + 1) {
+                    return false;
+                }
+                lastValue = currentValue;
+            }
+        }
+        return true;
+    }
+
+
+    // [تعديل جذري] منطق جديد للبحث الذكي عن بداية كتلة السؤال
     while (i < lines.length) {
         const line = lines[i];
         if (!line) { i++; continue; }
-        let questionText = line.trim();
-        let potentialOptionsIndex = -1;
+
+        const isQuestionStart = findMatch(line, questionPatterns) || (lines[i + 1] && findMatch(lines[i + 1], optionPatterns) && !findMatch(line, optionPatterns) && !findMatch(line, answerPatterns));
+        if (!isQuestionStart) { i++; continue; }
+
+        let questionText = line;
+        let potentialOptionsIndex = i + 1;
+
         let j = i + 1;
-        while (j < lines.length) {
-            const currentLine = lines[j].trim();
-            if (!currentLine) { j++; continue; }
-            if (findMatch(currentLine, optionPatterns) || findMatch(currentLine, answerPatterns)) { if (findMatch(currentLine, optionPatterns)) { potentialOptionsIndex = j; } break; }
-            questionText += ' ' + currentLine;
+        while (j < lines.length && !findMatch(lines[j], optionPatterns) && !findMatch(lines[j], answerPatterns)) {
+            questionText += ' ' + lines[j].trim();
+            potentialOptionsIndex = j + 1;
             j++;
         }
-        if (potentialOptionsIndex !== -1) {
-            const currentQuestion = { question: questionText, options: [], correctAnswerIndex: undefined };
+        
+        if (potentialOptionsIndex < lines.length && findMatch(lines[potentialOptionsIndex], optionPatterns)) {
+            const currentQuestion = { question: questionText.trim(), options: [], correctAnswerIndex: undefined };
             let k = potentialOptionsIndex;
             const optionLines = [];
+
             while (k < lines.length) {
-                const optLine = lines[k].trim();
-                if (!optLine) { k++; continue; } // تجاهل الأسطر الفارغة المتبقية إن وجدت
-                if (findMatch(optLine, answerPatterns)) { break; }
+                const optLine = lines[k];
+                if (!optLine || findMatch(optLine, answerPatterns)) break;
+                
                 const optionMatch = findMatch(optLine, optionPatterns);
                 if (optionMatch) {
                     optionLines.push(optLine);
-                    const optionText = optionMatch[2] ? optionMatch[2].trim() : optionMatch[1].trim();
-                    currentQuestion.options.push(optionText);
+                    currentQuestion.options.push(optionMatch[2].trim());
                     k++;
-                } else { break; }
-            }
-            if (!areOptionsConsistent(optionLines)) { i = i + 1; continue; }
-            i = k; // تم التحديث هنا
-
-            // البحث عن الإجابة في السطر الحالي أو التالي
-            let answerFound = false;
-            if (i < lines.length) {
-                const answerMatch = findMatch(lines[i], answerPatterns);
-                if (answerMatch) {
-                    const answerLine = lines[i];
-                    let answerText = answerLine.replace(/^(Answer|Correct Answer|Solution|Ans|Sol):?/i, '').trim();
-                    let correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === answerText.toLowerCase());
-                    if (correctIndex === -1) {
-                        const letterMatch = answerText.match(/^[A-Z]|\d/i);
-                        if (letterMatch) {
-                            const letterOrNumber = letterMatch[0].toUpperCase();
-                            const index = isNaN(parseInt(letterOrNumber)) ? letterOrNumber.charCodeAt(0) - 'A'.charCodeAt(0) : parseInt(letterOrNumber) - 1;
-                            if (index >= 0 && index < currentQuestion.options.length) { correctIndex = index; }
-                        }
-                    }
-                    if (correctIndex !== -1) { 
-                        currentQuestion.correctAnswerIndex = correctIndex; 
-                        i++; // انتقل للسطر التالي بعد العثور على الإجابة
-                        answerFound = true;
-                    }
+                } else {
+                    break;
                 }
             }
+            
+            if (!validateOptionsSequence(optionLines)) { i++; continue; }
 
-            if (currentQuestion.options.length > 1 && currentQuestion.correctAnswerIndex !== undefined) { 
-                questions.push(currentQuestion); 
+            if (k < lines.length && findMatch(lines[k], answerPatterns)) {
+                const answerLine = lines[k];
+                let answerText = answerLine.replace(answerPatterns[0], '').trim();
+                let correctIndex = -1;
+                
+                const cleanAnswerText = answerText.replace(/^[A-Z\dIVXLCDM]+[\.\)]\s*/i, '').trim();
+                correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === cleanAnswerText.toLowerCase());
+
+                if (correctIndex === -1) {
+                    const identifierMatch = answerText.match(/^[A-Z\dIVXLCDM]+/i);
+                    if (identifierMatch) {
+                        // منطق ذكي لتحديد الإجابة الصحيحة بناءً على نوع ترقيم الخيارات
+                        const firstOptionLine = optionLines[0];
+                        if(findMatch(firstOptionLine, numberOptionPatterns)) {
+                            correctIndex = parseInt(identifierMatch[0], 10) - 1;
+                        } else if(findMatch(firstOptionLine, letterOptionPatterns)) {
+                            correctIndex = identifierMatch[0].toUpperCase().charCodeAt(0) - 'A'.charCodeAt(0);
+                        } else if(findMatch(firstOptionLine, romanOptionPatterns)) {
+                             correctIndex = romanToNumber(identifierMatch[0].toUpperCase()) - 1;
+                        }
+                    }
+                }
+                 if (correctIndex >= 0 && correctIndex < currentQuestion.options.length) {
+                    currentQuestion.correctAnswerIndex = correctIndex;
+                 }
+                i = k + 1;
+            } else {
+                i = k;
             }
-             if (!answerFound) { i = k; } // إذا لم نجد إجابة، أعد المؤشر
+
+            if (currentQuestion.options.length > 1 && currentQuestion.correctAnswerIndex !== undefined) {
+                questions.push(currentQuestion);
+            }
         } else {
-             i++;
+            i++;
         }
     }
     return questions;
