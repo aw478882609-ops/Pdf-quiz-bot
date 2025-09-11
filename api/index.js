@@ -178,17 +178,24 @@ module.exports = async (req, res) => {
 
 // ... دالة extractQuestions تبقى كما هي ...
 function extractQuestions(text) {
-    const questions = [];
+    // الخطوة 1: توحيد فواصل الأسطر المختلفة
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\f/g, '\n').replace(/\u2028|\u2029/g, '\n');
-    text = text.replace(/--- PAGE \d+ ---/g, '\n');
+
+    // الخطوة 2 (الحل الجديد): إزالة الأسطر الفارغة المتتالية باستبدالها بسطر واحد
+    text = text.replace(/\n{2,}/g, '\n');
+
     const lines = text.split('\n').map(l => l.trim());
     let i = 0;
+    const questions = [];
     const letterOptionPatterns = [/^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i, /^\s*\[([A-Z])\]\s*(.+)/i, /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i, /^\s*([A-Z])\s+(.+)/i,];
     const numberOptionPatterns = [/^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/, /^\s*(\d+)\s+(.+)/];
     const optionPatterns = [...letterOptionPatterns, ...numberOptionPatterns];
     const answerPatterns = [/^(Answer|Correct Answer|Solution|Ans|Sol):?/i];
+
     function findMatch(line, patterns) { for (const pattern of patterns) { const match = line.match(pattern); if (match) return match; } return null; }
+
     function areOptionsConsistent(optionLines) { if (optionLines.length === 0) return false; let style = null; for (const line of optionLines) { let currentStyle = null; if (findMatch(line, letterOptionPatterns)) { currentStyle = 'letters'; } else if (findMatch(line, numberOptionPatterns)) { currentStyle = 'numbers'; } else { return false; } if (!style) { style = currentStyle; } else if (style !== currentStyle) { return false; } } return true; }
+
     while (i < lines.length) {
         const line = lines[i];
         if (!line) { i++; continue; }
@@ -208,6 +215,7 @@ function extractQuestions(text) {
             const optionLines = [];
             while (k < lines.length) {
                 const optLine = lines[k].trim();
+                if (!optLine) { k++; continue; } // تجاهل الأسطر الفارغة المتبقية إن وجدت
                 if (findMatch(optLine, answerPatterns)) { break; }
                 const optionMatch = findMatch(optLine, optionPatterns);
                 if (optionMatch) {
@@ -218,11 +226,14 @@ function extractQuestions(text) {
                 } else { break; }
             }
             if (!areOptionsConsistent(optionLines)) { i = i + 1; continue; }
-            i = k - 1;
-            if (i + 1 < lines.length) {
-                const answerMatch = findMatch(lines[i + 1], answerPatterns);
+            i = k; // تم التحديث هنا
+
+            // البحث عن الإجابة في السطر الحالي أو التالي
+            let answerFound = false;
+            if (i < lines.length) {
+                const answerMatch = findMatch(lines[i], answerPatterns);
                 if (answerMatch) {
-                    const answerLine = lines[i + 1];
+                    const answerLine = lines[i];
                     let answerText = answerLine.replace(/^(Answer|Correct Answer|Solution|Ans|Sol):?/i, '').trim();
                     let correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === answerText.toLowerCase());
                     if (correctIndex === -1) {
@@ -233,12 +244,21 @@ function extractQuestions(text) {
                             if (index >= 0 && index < currentQuestion.options.length) { correctIndex = index; }
                         }
                     }
-                    if (correctIndex !== -1) { currentQuestion.correctAnswerIndex = correctIndex; i++; }
+                    if (correctIndex !== -1) { 
+                        currentQuestion.correctAnswerIndex = correctIndex; 
+                        i++; // انتقل للسطر التالي بعد العثور على الإجابة
+                        answerFound = true;
+                    }
                 }
             }
-            if (currentQuestion.options.length > 1 && currentQuestion.correctAnswerIndex !== undefined) { questions.push(currentQuestion); }
+
+            if (currentQuestion.options.length > 1 && currentQuestion.correctAnswerIndex !== undefined) { 
+                questions.push(currentQuestion); 
+            }
+             if (!answerFound) { i = k; } // إذا لم نجد إجابة، أعد المؤشر
+        } else {
+             i++;
         }
-        i++;
     }
     return questions;
 }
