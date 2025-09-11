@@ -175,44 +175,32 @@ module.exports = async (req, res) => {
     res.status(200).send('OK');
 };
 
+// ... دالة extractQuestions تبقى كما هي ...
 function extractQuestions(text) {
     const questions = [];
-
-    // ✨ التعديل: هذا السطر يعالج فواصل الصفحات أولاً ويحولها لأسطر عادية
-    const cleanText = text.replace(/\f/g, '\n').replace(/\r\n/g, '\n').replace(/\r/g, '');
-    
-    const lines = cleanText.split('\n').map(l => l.trim());
+    text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\f/g, '\n').replace(/\u2028|\u2029/g, '\n');
+    text = text.replace(/--- PAGE \d+ ---/g, '\n');
+    const lines = text.split('\n').map(l => l.trim());
     let i = 0;
     const letterOptionPatterns = [/^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i, /^\s*\[([A-Z])\]\s*(.+)/i, /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i, /^\s*([A-Z])\s+(.+)/i,];
     const numberOptionPatterns = [/^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/, /^\s*(\d+)\s+(.+)/];
     const optionPatterns = [...letterOptionPatterns, ...numberOptionPatterns];
     const answerPatterns = [/^(Answer|Correct Answer|Solution|Ans|Sol):?/i];
-
     function findMatch(line, patterns) { for (const pattern of patterns) { const match = line.match(pattern); if (match) return match; } return null; }
     function areOptionsConsistent(optionLines) { if (optionLines.length === 0) return false; let style = null; for (const line of optionLines) { let currentStyle = null; if (findMatch(line, letterOptionPatterns)) { currentStyle = 'letters'; } else if (findMatch(line, numberOptionPatterns)) { currentStyle = 'numbers'; } else { return false; } if (!style) { style = currentStyle; } else if (style !== currentStyle) { return false; } } return true; }
-    
     while (i < lines.length) {
         const line = lines[i];
         if (!line) { i++; continue; }
-        
         let questionText = line.trim();
         let potentialOptionsIndex = -1;
         let j = i + 1;
-
-        // تجميع نص السؤال الممتد على عدة أسطر
         while (j < lines.length) {
             const currentLine = lines[j].trim();
             if (!currentLine) { j++; continue; }
-            if (findMatch(currentLine, optionPatterns) || findMatch(currentLine, answerPatterns)) {
-                if (findMatch(currentLine, optionPatterns)) {
-                    potentialOptionsIndex = j;
-                }
-                break;
-            }
+            if (findMatch(currentLine, optionPatterns) || findMatch(currentLine, answerPatterns)) { if (findMatch(currentLine, optionPatterns)) { potentialOptionsIndex = j; } break; }
             questionText += ' ' + currentLine;
             j++;
         }
-
         if (potentialOptionsIndex !== -1) {
             const currentQuestion = { question: questionText, options: [], correctAnswerIndex: undefined };
             let k = potentialOptionsIndex;
@@ -229,9 +217,7 @@ function extractQuestions(text) {
                 } else { break; }
             }
             if (!areOptionsConsistent(optionLines)) { i = i + 1; continue; }
-            
-            i = k - 1; // ضبط المؤشر i
-            
+            i = k - 1;
             if (i + 1 < lines.length) {
                 const answerMatch = findMatch(lines[i + 1], answerPatterns);
                 if (answerMatch) {
@@ -246,18 +232,12 @@ function extractQuestions(text) {
                             if (index >= 0 && index < currentQuestion.options.length) { correctIndex = index; }
                         }
                     }
-                    if (correctIndex !== -1) { 
-                        currentQuestion.correctAnswerIndex = correctIndex;
-                        i++; // زيادة المؤشر لتخطي سطر الإجابة
-                    }
+                    if (correctIndex !== -1) { currentQuestion.correctAnswerIndex = correctIndex; i++; }
                 }
             }
-            if (currentQuestion.options.length > 1 && currentQuestion.correctAnswerIndex !== undefined) {
-                questions.push(currentQuestion);
-            }
+            if (currentQuestion.options.length > 1 && currentQuestion.correctAnswerIndex !== undefined) { questions.push(currentQuestion); }
         }
         i++;
     }
     return questions;
 }
-
