@@ -40,6 +40,7 @@ module.exports = async (req, res) => {
                 const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
                 const dataBuffer = Buffer.from(response.data);
                 const pdfData = await pdf(dataBuffer);
+                console.log("RAW_PDF_TEXT_START>>>", JSON.stringify(pdfData.text), "<<<RAW_PDF_TEXT_END");
                 const questions = extractQuestions(pdfData.text);
 
                 if (questions.length > 0) {
