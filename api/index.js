@@ -74,7 +74,7 @@ function extractQuestions(text) {
         .replace(/\f/g, '\n')
         .replace(/\u2028|\u2029/g, '\n');
 
-    const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    const lines = text.split('\n').map(l => l.trim());
     let i = 0;
 
     // ✅ أنماط بداية السؤال
@@ -109,10 +109,23 @@ function extractQuestions(text) {
         return null;
     }
 
-    // ✅ تحديد العنوان (يتجاهله)
-    function isHeading(line, nextLine) {
-        const wordCount = line.split(/\s+/).length;
-        const looksLikeQuestion = nextLine && findMatch(nextLine, questionPatterns);
+    // ✅ تحديد العنوان (يتجاهله حتى لو فيه سطور فاضية)
+    function isHeading(line, lines, index) {
+        const wordCount = line.split(/\s+/).filter(Boolean).length;
+
+        // دور على أول سطر غير فاضي بعد العنوان
+        let j = index + 1;
+        let nextNonEmpty = null;
+        while (j < lines.length) {
+            if (lines[j].trim().length > 0) {
+                nextNonEmpty = lines[j];
+                break;
+            }
+            j++;
+        }
+
+        const looksLikeQuestion = nextNonEmpty && findMatch(nextNonEmpty, questionPatterns);
+
         return (
             wordCount <= 4 &&
             !line.endsWith('?') &&
@@ -122,14 +135,19 @@ function extractQuestions(text) {
     }
 
     while (i < lines.length) {
-        const line = lines[i];
+        const line = lines[i].trim();
+        if (!line) {
+            i++;
+            continue;
+        }
+
         const questionMatch = findMatch(line, questionPatterns);
 
         if (questionMatch) {
             let questionText = questionMatch[0].trim();
 
             // ✅ تجاهل العناوين
-            if (isHeading(questionText, lines[i + 1])) {
+            if (isHeading(questionText, lines, i)) {
                 console.log("📌 تجاهل العنوان:", questionText);
                 i++;
                 continue;
@@ -150,7 +168,9 @@ function extractQuestions(text) {
             if (potentialOptionsIndex !== -1) {
                 // اجمع نص السؤال
                 for (let k = i + 1; k < potentialOptionsIndex; k++) {
-                    questionText += ' ' + lines[k];
+                    if (lines[k].trim().length > 0) {
+                        questionText += ' ' + lines[k];
+                    }
                 }
 
                 const currentQuestion = {
