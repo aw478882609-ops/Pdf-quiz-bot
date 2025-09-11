@@ -130,11 +130,10 @@ module.exports = async (req, res) => {
                 const questions = userState[userId].questions;
 
                 try {
-                    // --- الخطوة الأولى: التأكد من وجود الشات وأن البوت عضو فيه ---
                     const chatInfo = await bot.getChat(targetChatId);
-                    
+
                     if (chatInfo.type === 'private') {
-                        await bot.sendMessage(chatId, '❌ لا يمكن إرسال الأسئلة إلى المستخدمين مباشرةً. يرجى استخدام معرف قناة أو مجموعة.');
+                        await bot.sendMessage(chatId, '❌ لا يمكن الإرسال إلى المستخدمين. يرجى استخدام معرف قناة أو مجموعة.');
                         delete userState[userId];
                         return;
                     }
@@ -142,51 +141,60 @@ module.exports = async (req, res) => {
                     const botInfo = await bot.getMe();
                     const botMember = await bot.getChatMember(targetChatId, botInfo.id);
 
-                    // --- الخطوة الثانية: التحقق إذا كان البوت مشرفًا ---
+                    const chatType = chatInfo.type === 'channel' ? 'قناة' : 'مجموعة';
+                    let infoText = `*تم العثور على المعلومات التالية:*\n\n`;
+                    infoText += `👤 *الاسم:* ${chatInfo.title}\n`;
+                    infoText += `🆔 *المعرف:* \`${chatInfo.id}\`\n`;
+                    infoText += `*النوع:* ${chatType}\n`;
+
+                    // --- التحقق الذكي من الصلاحيات ---
+                    let canProceed = false;
                     if (botMember.status === 'administrator' || botMember.status === 'creator') {
-                        // --- الخطوة الثالثة (الآمنة الآن): طلب المعلومات الإضافية ---
-                        const membersCount = await bot.getChatMembersCount(targetChatId);
+                        const membersCount = await bot.getChatMembersCount(targetChatId); // طلب آمن الآن
+                        infoText += `👥 *عدد الأعضاء:* ${membersCount}\n\n`;
 
-                        const chatType = chatInfo.type === 'channel' ? 'قناة' : 'مجموعة';
-                        let infoText = `*تم العثور على المعلومات التالية:*\n\n`;
-                        infoText += `👤 *الاسم:* ${chatInfo.title}\n`;
-                        infoText += `🆔 *المعرف:* \`${chatInfo.id}\`\n`;
-                        infoText += `*النوع:* ${chatType}\n`;
-                        infoText += `👥 *عدد الأعضاء:* ${membersCount}\n`;
-                        if (chatInfo.description) {
-                            infoText += `📝 *الوصف:* ${chatInfo.description}\n`;
-                        }
-                        await bot.sendMessage(chatId, infoText, { parse_mode: 'Markdown' });
+                        const isAdmin = botMember.status === 'administrator' || botMember.status === 'creator';
+                        const canPost = botMember.can_post_messages;
+                        const canSendPolls = botMember.can_send_polls;
 
-                        // --- الخطوة الرابعة: التحقق من الصلاحيات المحددة ---
-                        if (botMember.can_post_messages && botMember.can_send_polls !== false) {
-                            userState[userId].awaiting = 'send_confirmation';
-                            userState[userId].targetChatId = targetChatId;
-                            userState[userId].targetChatTitle = chatInfo.title;
+                        infoText += `*تقرير الصلاحيات:*\n`;
+                        infoText += `▫️ *حالة البوت:* مشرف (Admin)\n`;
+                        infoText += `▫️ *إرسال الرسائل:* ${canPost ? '✅ يستطيع' : '❌ لا يستطيع'}\n`;
+                        infoText += `▫️ *إرسال الاستطلاعات:* ${canSendPolls ? '✅ يستطيع' : '❌ لا يستطيع'}\n`;
 
-                            const confirmationKeyboard = {
-                                inline_keyboard: [
-                                    [{ text: '✅ تأكيد الإرسال', callback_data: 'confirm_send' }],
-                                    [{ text: '❌ إلغاء', callback_data: 'cancel_send' }]
-                                ]
-                            };
-
-                            await bot.sendMessage(chatId, `✅ الصلاحيات متوفرة. هل أنت متأكد من أنك تريد إرسال ${questions.length} سؤالًا إلى "${chatInfo.title}"؟`, {
-                                reply_markup: confirmationKeyboard
-                            });
-
-                        } else {
-                            await bot.sendMessage(chatId, '⚠️ ليس لدي صلاحية "نشر الرسائل" أو "إرسال استطلاعات" في هذه القناة/المجموعة.');
-                            delete userState[userId];
+                        if (canPost && canSendPolls) {
+                            canProceed = true;
                         }
                     } else {
-                        await bot.sendMessage(chatId, '⚠️ أنا لست مشرفًا (Admin) في هذه القناة/المجموعة.');
+                        infoText += `\n*تقرير الصلاحيات:*\n`;
+                        infoText += `▫️ *حالة البوت:* مجرد عضو\n`;
+                    }
+                    
+                    await bot.sendMessage(chatId, infoText, { parse_mode: 'Markdown' });
+
+                    if (canProceed) {
+                        userState[userId].awaiting = 'send_confirmation';
+                        userState[userId].targetChatId = targetChatId;
+                        userState[userId].targetChatTitle = chatInfo.title;
+
+                        const confirmationKeyboard = {
+                            inline_keyboard: [[{ text: '✅ تأكيد الإرسال', callback_data: 'confirm_send' }, { text: '❌ إلغاء', callback_data: 'cancel_send' }]]
+                        };
+                        await bot.sendMessage(chatId, `هل أنت متأكد أنك تريد إرسال ${questions.length} سؤالًا إلى "${chatInfo.title}"؟`, {
+                            reply_markup: confirmationKeyboard
+                        });
+                    } else {
+                        await bot.sendMessage(chatId, '⚠️ لا يمكن المتابعة. ليس لدي الصلاحيات الكافية للإرسال في هذا الشات.');
                         delete userState[userId];
                     }
 
                 } catch (error) {
                     console.error(error);
-                    await bot.sendMessage(chatId, '❌ خطأ! لم أتمكن من العثور على هذا الشات. تأكد أن المعرف صحيح وأنني عضو فيه.');
+                    if (error.response && error.response.body.description.includes("chat not found")) {
+                         await bot.sendMessage(chatId, '❌ خطأ! لم يتم العثور على هذا الشات. تأكد من صحة المعرف.');
+                    } else {
+                         await bot.sendMessage(chatId, '❌ خطأ! لم أتمكن من الوصول إلى هذا الشات. تأكد من أنني عضو فيه.');
+                    }
                     delete userState[userId];
                 }
             }
