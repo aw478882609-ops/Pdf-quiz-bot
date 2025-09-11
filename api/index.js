@@ -1,17 +1,18 @@
-// api/index.js
+// ==== بداية كود Vercel الكامل والصحيح (api/index.js) ====
 
 const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
 const axios = require('axios');
 const micro = require('micro');
 
+// تهيئة البوت
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const bot = new TelegramBot(token);
 
-// 🧠 متغير لتخزين حالة المستخدم والأسئلة المستخرجة مؤقتًا
+// متغير لتخزين حالة المستخدم مؤقتًا
 const userState = {};
-// ... (الجزء العلوي من الملف يبقى كما هو) ...
 
+// وحدة التعامل مع الطلبات
 module.exports = async (req, res) => {
     try {
         if (req.method !== 'POST') {
@@ -61,118 +62,120 @@ module.exports = async (req, res) => {
             }
         }
 
-        // ... (بداية الملف تبقى كما هي) ...
+        // 2️⃣ التعامل مع الضغط على الأزرار
+        else if (update.callback_query) {
+            const callbackQuery = update.callback_query;
+            const userId = callbackQuery.from.id;
+            const chatId = callbackQuery.message.chat.id;
+            const messageId = callbackQuery.message.message_id;
+            const data = callbackQuery.data;
 
-        // 2️⃣ التعامل مع الضغط على الأزرار (الجزء المعدل)
-        else if (update.callback_query) {
-            const callbackQuery = update.callback_query;
-            const userId = callbackQuery.from.id;
-            const chatId = callbackQuery.message.chat.id;
-            const messageId = callbackQuery.message.message_id;
-            const data = callbackQuery.data;
+            if (!userState[userId] || !userState[userId].questions) {
+                await bot.answerCallbackQuery(callbackQuery.id, { text: 'انتهت هذه الجلسة، يرجى إرسال الملف مرة أخرى.', show_alert: true });
+                await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
+                return res.status(200).send('OK');
+            }
 
-            if (!userState[userId] || !userState[userId].questions) {
-                await bot.answerCallbackQuery(callbackQuery.id, { text: 'انتهت هذه الجلسة، يرجى إرسال الملف مرة أخرى.', show_alert: true });
-                await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
-                return res.status(200).send('OK');
-            }
+            const gasWebAppUrl = process.env.GAS_WEB_APP_URL;
 
-            const gasWebAppUrl = process.env.GAS_WEB_APP_URL;
+            if (!gasWebAppUrl && (data === 'send_here' || data === 'confirm_send')) {
+                await bot.editMessageText('⚠️ خطأ في الإعدادات: رابط خدمة الإرسال الخارجية غير موجود.', { chat_id: chatId, message_id: messageId });
+                return res.status(200).send('OK');
+            }
 
-            if (!gasWebAppUrl && (data === 'send_here' || data === 'confirm_send')) {
-                 await bot.editMessageText('⚠️ خطأ في الإعدادات: رابط خدمة الإرسال الخارجية غير موجود.', { chat_id: chatId, message_id: messageId });
-                 return res.status(200).send('OK');
-            }
+            if (data === 'send_here') {
+                const { questions } = userState[userId];
+                const payload = {
+                    questions, targetChatId: chatId, originalChatId: chatId, startIndex: 0,
+                    chatType: 'private'
+                };
+                axios.post(gasWebAppUrl, payload).catch(err => console.error("Error calling GAS:", err.message));
+                await bot.answerCallbackQuery(callbackQuery.id);
+                await bot.editMessageText(`✅ تم إرسال المهمة للخدمة الخارجية.\n\nسيتم إرسال ${questions.length} سؤالًا هنا في الخلفية.`, { chat_id: chatId, message_id: messageId });
+                delete userState[userId];
 
-            if (data === 'send_here') {
-                const { questions } = userState[userId];
-                const payload = {
-                    questions, targetChatId: chatId, originalChatId: chatId, startIndex: 0,
-                    chatType: 'private' // ✨ الميزة الجديدة: تحديد النوع كمحادثة خاصة
-                };
-                axios.post(gasWebAppUrl, payload).catch(err => console.error("Error calling GAS:", err.message));
-                await bot.answerCallbackQuery(callbackQuery.id);
-                await bot.editMessageText(`✅ تم إرسال المهمة للخدمة الخارجية.\n\nسيتم إرسال ${questions.length} سؤالًا هنا في الخلفية.`, { chat_id: chatId, message_id: messageId });
-                delete userState[userId];
+            } else if (data === 'send_to_channel') {
+                userState[userId].awaiting = 'channel_id';
+                await bot.answerCallbackQuery(callbackQuery.id);
+                await bot.editMessageText('يرجى إرسال معرف (ID) القناة أو المجموعة الآن.\n(مثال: @username أو -100123456789)', { chat_id: chatId, message_id: messageId });
 
-            } else if (data === 'send_to_channel') {
-                userState[userId].awaiting = 'channel_id';
-                await bot.answerCallbackQuery(callbackQuery.id);
-                await bot.editMessageText('يرجى إرسال معرف (ID) القناة أو المجموعة الآن.\n(مثال: @username أو -100123456789)', { chat_id: chatId, message_id: messageId });
+            } else if (data === 'confirm_send') {
+                if (userState[userId] && userState[userId].awaiting === 'send_confirmation') {
+                    const { questions, targetChatId, targetChatTitle, chatType } = userState[userId];
+                    const payload = {
+                        questions, targetChatId, originalChatId: chatId, startIndex: 0,
+                        chatType
+                    };
+                    axios.post(gasWebAppUrl, payload).catch(err => console.error("Error calling GAS:", err.message));
+                    await bot.answerCallbackQuery(callbackQuery.id);
+                    await bot.editMessageText(`✅ تم إرسال المهمة للخدمة الخارجية.\n\nسيتم إرسال ${questions.length} سؤالًا في الخلفية إلى "${targetChatTitle}".`, { chat_id: chatId, message_id: messageId });
+                    delete userState[userId];
+                }
+            } else if (data === 'cancel_send') {
+                await bot.answerCallbackQuery(callbackQuery.id);
+                await bot.editMessageText('❌ تم إلغاء العملية.', { chat_id: chatId, message_id: messageId });
+                delete userState[userId];
+            }
+        }
 
-            } else if (data === 'confirm_send') {
-                if (userState[userId] && userState[userId].awaiting === 'send_confirmation') {
-                    const { questions, targetChatId, targetChatTitle, chatType } = userState[userId];
-                    const payload = {
-                        questions, targetChatId, originalChatId: chatId, startIndex: 0,
-                        chatType // ✨ الميزة الجديدة: إرسال نوع المحادثة (channel, supergroup)
-                    };
-                    axios.post(gasWebAppUrl, payload).catch(err => console.error("Error calling GAS:", err.message));
-                    await bot.answerCallbackQuery(callbackQuery.id);
-                    await bot.editMessageText(`✅ تم إرسال المهمة للخدمة الخارجية.\n\nسيتم إرسال ${questions.length} سؤالًا في الخلفية إلى "${targetChatTitle}".`, { chat_id: chatId, message_id: messageId });
-                    delete userState[userId];
-                }
-            } else if (data === 'cancel_send') {
-                await bot.answerCallbackQuery(callbackQuery.id);
-                await bot.editMessageText('❌ تم إلغاء العملية.', { chat_id: chatId, message_id: messageId });
-                delete userState[userId];
-            }
-        }
+        // 3️⃣ التعامل مع الرسائل النصية (ID القناة)
+        else if (update.message && update.message.text && !update.message.document) {
+            const message = update.message;
+            const userId = message.from.id;
+            const chatId = message.chat.id;
+            const text = message.text;
 
-        // 3️⃣ التعامل مع الرسائل النصية (ID القناة) (الجزء المعدل)
-        else if (update.message && update.message.text && !update.message.document) {
-            const message = update.message;
-            const userId = message.from.id;
-            const chatId = message.chat.id;
-            const text = message.text;
+            if (userState[userId] && userState[userId].awaiting === 'channel_id') {
+                const targetChatId = text.trim();
+                try {
+                    const chatInfo = await bot.getChat(targetChatId);
+                    const botMember = await bot.getChatMember(targetChatId, (await bot.getMe()).id);
 
-            if (userState[userId] && userState[userId].awaiting === 'channel_id') {
-                const targetChatId = text.trim();
-                try {
-                    const chatInfo = await bot.getChat(targetChatId);
-                    const botMember = await bot.getChatMember(targetChatId, (await bot.getMe()).id);
+                    let infoText = `*-- معلومات الهدف --*\n`;
+                    infoText += `👤 *الاسم:* ${chatInfo.title}\n`;
+                    infoText += `🆔 *المعرف:* \`${chatInfo.id}\`\n\n`;
+                    infoText += `*-- صلاحيات البوت --*\n`;
 
-                    // ✨ الميزة الجديدة: بناء رسالة التأكيد مع المعلومات والصلاحيات
-                    let infoText = `*-- معلومات الهدف --*\n`;
-                    infoText += `👤 *الاسم:* ${chatInfo.title}\n`;
-                    infoText += `🆔 *المعرف:* \`${chatInfo.id}\`\n\n`;
-                    infoText += `*-- صلاحيات البوت --*\n`;
+                    let canProceed = false;
+                    if (botMember.status === 'administrator' || botMember.status === 'creator') {
+                        infoText += `▫️ *الحالة:* مشرف (Admin)\n`;
+                        const canPost = botMember.can_post_messages;
+                        infoText += `▫️ *إرسال الرسائل:* ${canPost ? '✅ يستطيع' : '❌ لا يستطيع'}\n`;
+                        if (canPost) canProceed = true;
+                    } else {
+                        infoText += `▫️ *الحالة:* مجرد عضو 🤷‍♂️\n`;
+                    }
 
-                    let canProceed = false;
-                    if (botMember.status === 'administrator' || botMember.status === 'creator') {
-                        infoText += `▫️ *الحالة:* مشرف (Admin)\n`;
-                        const canPost = botMember.can_post_messages;
-                        infoText += `▫️ *إرسال الرسائل:* ${canPost ? '✅ يستطيع' : '❌ لا يستطيع'}\n`;
-                        if(canPost) canProceed = true;
-                    } else {
-                        infoText += `▫️ *الحالة:* مجرد عضو 🤷‍♂️\n`;
-                    }
+                    infoText += `\n---------------------\n`;
 
-                    infoText += `\n---------------------\n`;
+                    if (canProceed) {
+                        userState[userId] = {
+                            ...userState[userId],
+                            awaiting: 'send_confirmation',
+                            targetChatId: chatInfo.id,
+                            targetChatTitle: chatInfo.title,
+                            chatType: chatInfo.type
+                        };
+                        infoText += `هل أنت متأكد أنك تريد إرسال ${userState[userId].questions.length} سؤالًا؟`;
+                        const confirmationKeyboard = { inline_keyboard: [[{ text: '✅ نعم، قم بالإرسال', callback_data: 'confirm_send' }, { text: '❌ إلغاء', callback_data: 'cancel_send' }]] };
+                        await bot.sendMessage(chatId, infoText, { parse_mode: 'Markdown', reply_markup: confirmationKeyboard });
+                    } else {
+                        infoText += `⚠️ لا يمكن المتابعة. الصلاحيات غير كافية.`;
+                        await bot.sendMessage(chatId, infoText, { parse_mode: 'Markdown' });
+                    }
+                } catch (error) {
+                    await bot.sendMessage(chatId, '❌ فشل! لم أتمكن من العثور على هذه القناة/المجموعة أو أن البوت ليس عضوًا فيها.');
+                }
+            }
+        }
+    } catch (error) {
+        console.error("General error:", error);
+    }
+    // إرسال رد 200 OK دائمًا لتيليجرام لإنهاء الطلب
+    res.status(200).send('OK');
+}; // ✅ هذا هو القوس المهم الذي كان ناقصًا
 
-                    if (canProceed) {
-                        userState[userId] = {
-                            ...userState[userId],
-                            awaiting: 'send_confirmation',
-                            targetChatId: chatInfo.id,
-                            targetChatTitle: chatInfo.title,
-                            chatType: chatInfo.type // تخزين نوع الشات
-                        };
-                        infoText += `هل أنت متأكد أنك تريد إرسال ${userState[userId].questions.length} سؤالًا؟`;
-                        const confirmationKeyboard = { inline_keyboard: [[{ text: '✅ نعم، قم بالإرسال', callback_data: 'confirm_send' }, { text: '❌ إلغاء', callback_data: 'cancel_send' }]] };
-                        await bot.sendMessage(chatId, infoText, { parse_mode: 'Markdown', reply_markup: confirmationKeyboard });
-                    } else {
-                        infoText += `⚠️ لا يمكن المتابعة. الصلاحيات غير كافية.`;
-                        await bot.sendMessage(chatId, infoText, { parse_mode: 'Markdown' });
-                    }
-                } catch (error) {
-                    await bot.sendMessage(chatId, '❌ فشل! لم أتمكن من العثور على هذه القناة/المجموعة أو أن البوت ليس عضوًا فيها.');
-                }
-            }
-        }
-// ... (بقية الملف ودالة extractQuestions تبقى كما هي) ...
-
-// ... (دالة extractQuestions تبقى كما هي هنا)
+// دالة استخراج الأسئلة من النص
 function extractQuestions(text) {
     const questions = [];
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\f/g, '\n').replace(/\u2028|\u2029/g, '\n');
@@ -237,3 +240,5 @@ function extractQuestions(text) {
     }
     return questions;
 }
+
+// ==== نهاية كود Vercel ====
