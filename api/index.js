@@ -81,7 +81,7 @@ function extractQuestions(text) {
     const questionPatterns = [
         /^\s*(q|question)\s*\d+\s*[:\s-]?\s*(.+)/i,  // Q1: أو Question 1 -
         /^\d+\.\s(.+)/,                              // 1. نص
-        /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify)\s(.+)/i, // كلمات مفتاحية
+        /^(What|Which|Who|How|When|Where|Select|Choose|In the following|Identify|Explain|Define|Describe|List|State|Write|Give)\s(.+)/i, // كلمات مفتاحية
         /^(.+)\?$/,                                  // أي جملة منتهية بـ ؟
         /^(.+):$/                                    // أي جملة منتهية بـ :
     ];
@@ -138,17 +138,28 @@ function extractQuestions(text) {
         const questionMatch = findMatch(line, questionPatterns);
 
         if (questionMatch) {
+            // ✅ اجمع نص السؤال لحد أول اختيار
             let questionText = questionMatch[0].trim();
+            let m = i + 1;
+            while (m < lines.length) {
+                const nextLine = lines[m].trim();
+                if (!nextLine) { m++; continue; }
 
-            // 🟡 ابحث عن أول اختيار
+                if (findMatch(nextLine, optionPatterns) || findMatch(nextLine, answerPatterns)) {
+                    break;
+                }
+                questionText += ' ' + nextLine;
+                m++;
+            }
+
+            // 🟡 ابحث عن أول اختيار بعد السؤال
             let potentialOptionsIndex = -1;
-            let j = i + 1;
+            let j = m;
             while (j < lines.length) {
                 if (findMatch(lines[j], optionPatterns)) {
                     potentialOptionsIndex = j;
                     break;
                 }
-                // لو قابلنا إجابة قبل ما نلاقي اختيارات → ده مش سؤال
                 if (findMatch(lines[j], answerPatterns)) {
                     potentialOptionsIndex = -1;
                     break;
@@ -157,13 +168,6 @@ function extractQuestions(text) {
             }
 
             if (potentialOptionsIndex !== -1) {
-                // ✅ اجمع نص السؤال
-                for (let k = i + 1; k < potentialOptionsIndex; k++) {
-                    if (lines[k].trim().length > 0) {
-                        questionText += ' ' + lines[k];
-                    }
-                }
-
                 const currentQuestion = {
                     question: questionText,
                     options: [],
