@@ -87,7 +87,7 @@ module.exports = async (req, res) => {
                 const { questions } = userState[userId];
                 const payload = {
                     questions, targetChatId: chatId, originalChatId: chatId, startIndex: 0,
-                    chatType: 'private'
+                    chatType: 'private' // إرسال النوع كمحادثة خاصة
                 };
                 axios.post(gasWebAppUrl, payload).catch(err => console.error("Error calling GAS:", err.message));
                 await bot.answerCallbackQuery(callbackQuery.id);
@@ -104,7 +104,7 @@ module.exports = async (req, res) => {
                     const { questions, targetChatId, targetChatTitle, chatType } = userState[userId];
                     const payload = {
                         questions, targetChatId, originalChatId: chatId, startIndex: 0,
-                        chatType
+                        chatType // إرسال نوع المحادثة (channel, supergroup)
                     };
                     axios.post(gasWebAppUrl, payload).catch(err => console.error("Error calling GAS:", err.message));
                     await bot.answerCallbackQuery(callbackQuery.id);
@@ -131,6 +131,7 @@ module.exports = async (req, res) => {
                     const chatInfo = await bot.getChat(targetChatId);
                     const botMember = await bot.getChatMember(targetChatId, (await bot.getMe()).id);
 
+                    // بناء رسالة التأكيد مع المعلومات والصلاحيات
                     let infoText = `*-- معلومات الهدف --*\n`;
                     infoText += `👤 *الاسم:* ${chatInfo.title}\n`;
                     infoText += `🆔 *المعرف:* \`${chatInfo.id}\`\n\n`;
@@ -154,7 +155,7 @@ module.exports = async (req, res) => {
                             awaiting: 'send_confirmation',
                             targetChatId: chatInfo.id,
                             targetChatTitle: chatInfo.title,
-                            chatType: chatInfo.type
+                            chatType: chatInfo.type // تخزين نوع الشات لإرساله لاحقًا
                         };
                         infoText += `هل أنت متأكد أنك تريد إرسال ${userState[userId].questions.length} سؤالًا؟`;
                         const confirmationKeyboard = { inline_keyboard: [[{ text: '✅ نعم، قم بالإرسال', callback_data: 'confirm_send' }, { text: '❌ إلغاء', callback_data: 'cancel_send' }]] };
@@ -171,11 +172,10 @@ module.exports = async (req, res) => {
     } catch (error) {
         console.error("General error:", error);
     }
-    // إرسال رد 200 OK دائمًا لتيليجرام لإنهاء الطلب
     res.status(200).send('OK');
-}; // ✅ هذا هو القوس المهم الذي كان ناقصًا
+};
 
-// دالة استخراج الأسئلة من النص
+// ... دالة extractQuestions تبقى كما هي ...
 function extractQuestions(text) {
     const questions = [];
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\f/g, '\n').replace(/\u2028|\u2029/g, '\n');
@@ -240,5 +240,3 @@ function extractQuestions(text) {
     }
     return questions;
 }
-
-// ==== نهاية كود Vercel ====
