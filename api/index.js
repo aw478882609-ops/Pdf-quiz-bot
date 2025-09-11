@@ -78,17 +78,13 @@ function extractQuestions(text) {
         /^\s*(\d+)\s+(.+)/
     ];
     const answerPatterns = [
-        /^(Answer|Correct Answer|Solution|Ans|Sol):?\s*([A-Z]|\d)\s*[\)\.\/\-_\^&@':;"\\]?\s*(.+)?/i,
-        /^\s*([A-Z])\s*[\)\.\/\-_\^&@':;"\\]\s*(.+?)\s*$/i,
-        /^\s*\d+\s*[\)\.\/\-_\^&@':;"\\]\s*(.+?)\s*$/
+        /^(Answer|Correct Answer|Solution|Ans|Sol):?\s*([A-Z]|\d)\s*[\)\.\/\-_\^&@':;"\\]?\s*(.+)?/i
     ];
 
     function findMatch(line, patterns) {
         for (const pattern of patterns) {
             const match = line.match(pattern);
-            if (match) {
-                return match;
-            }
+            if (match) return match;
         }
         return null;
     }
@@ -154,20 +150,23 @@ function extractQuestions(text) {
                     const answerMatch = findMatch(lines[i + 1], answerPatterns);
                     if (answerMatch) {
                         const answerText = (answerMatch[3] || answerMatch[2] || answerMatch[1]).trim();
-                        const correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === answerText.toLowerCase());
-                        if (correctIndex !== -1) {
-                            currentQuestion.correctAnswerIndex = correctIndex;
-                        } else {
+                        let correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === answerText.toLowerCase());
+                        
+                        if (correctIndex === -1) {
                             const letterMatch = answerText.match(/^[A-Z]|\d/i);
                             if (letterMatch) {
                                 const letterOrNumber = letterMatch[0].toUpperCase();
                                 const index = isNaN(parseInt(letterOrNumber)) ? letterOrNumber.charCodeAt(0) - 'A'.charCodeAt(0) : parseInt(letterOrNumber) - 1;
                                 if (index >= 0 && index < currentQuestion.options.length) {
-                                    currentQuestion.correctAnswerIndex = index;
+                                    correctIndex = index;
                                 }
                             }
                         }
-                        i++; // تحديث المؤشر ليتجاوز سطر الإجابة
+
+                        if (correctIndex !== -1) {
+                            currentQuestion.correctAnswerIndex = correctIndex;
+                            i++; // تحديث المؤشر ليتجاوز سطر الإجابة
+                        }
                     }
                 }
                 
