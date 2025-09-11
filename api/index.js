@@ -62,6 +62,11 @@ function extractQuestions(text) {
     const lines = text.split('\n').map(line => line.trim());
     let i = 0;
 
+    // ✅ دالة تحدد إذا كان السطر "فاضي" حتى لو فيه مسافات أو رموز خفية
+    function isBlank(line) {
+        return !line || line.replace(/[\s\u200B-\u200D\uFEFF\r\f]/g, '').length === 0;
+    }
+
     const questionPatterns = [
         /^\s*(q|question)\s*\d+\s*[:\s-]?\s*(.+)/i,
         /^\d+\.\s(.+)/,
@@ -96,8 +101,8 @@ function extractQuestions(text) {
         if (questionMatch) {
             let questionText = questionMatch[0].trim();
 
-            // ✅ لو السطر اللي بعد "بداية السؤال" فاضي → ده عنوان مش سؤال
-            if (i + 1 < lines.length && lines[i + 1].trim().length === 0) {
+            // ✅ لو السطر اللي بعد بداية السؤال فاضي → ده عنوان مش سؤال
+            if (i + 1 < lines.length && isBlank(lines[i + 1])) {
                 i++;
                 continue;
             }
@@ -108,7 +113,7 @@ function extractQuestions(text) {
             // ابحث عن بداية الخيارات أو سطر فاضي
             let j = i + 1;
             while (j < lines.length) {
-                if (lines[j].trim().length === 0) {
+                if (isBlank(lines[j])) {
                     blankLineBetween = true;
                     break;
                 }
@@ -119,7 +124,7 @@ function extractQuestions(text) {
                 j++;
             }
 
-            // ✅ لو فيه سطر فاضي بين بداية السؤال والاختيارات → تجاهل (عنوان)
+            // ✅ لو لقيت سطر فاضي بين السؤال والاختيارات → تجاهل (عنوان)
             if (blankLineBetween) {
                 i++;
                 continue;
@@ -128,7 +133,7 @@ function extractQuestions(text) {
             if (potentialOptionsIndex !== -1) {
                 // اجمع النص بين بداية السؤال وبداية الخيارات
                 for (let k = i + 1; k < potentialOptionsIndex; k++) {
-                    if (lines[k].trim().length > 0) {
+                    if (!isBlank(lines[k])) {
                         questionText += ' ' + lines[k].trim();
                     }
                 }
@@ -194,5 +199,4 @@ function extractQuestions(text) {
 
     return questions;
 }
-
 
