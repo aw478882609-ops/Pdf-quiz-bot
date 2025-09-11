@@ -95,74 +95,85 @@ function extractQuestions(text) {
 
     while (i < lines.length) {
         const line = lines[i];
-        let questionText = null;
         
         const questionMatch = findMatch(line, questionPatterns);
         if (questionMatch) {
-            // Find start of question
-            questionText = questionMatch[0].trim();
+            let questionText = questionMatch[0].trim();
+            let potentialOptionsIndex = -1;
             let hasBlankLine = false;
 
-            // Greedily collect question text until a stop condition
+            // ابحث عن بداية الخيارات أو عن سطر فارغ
             let j = i + 1;
-            while (j < lines.length && !findMatch(lines[j], questionPatterns) && !findMatch(lines[j], optionPatterns)) {
+            while (j < lines.length) {
                 if (lines[j].trim().length === 0) {
                     hasBlankLine = true;
-                    break;
+                    break; // توقف عند العثور على سطر فارغ
                 }
-                questionText += ' ' + lines[j].trim();
+                if (findMatch(lines[j], optionPatterns)) {
+                    potentialOptionsIndex = j;
+                    break; // توقف عند العثور على بداية الخيارات
+                }
                 j++;
             }
-            
+
+            // إذا وجدنا سطراً فارغاً قبل الخيارات، فهذا يعني أنه عنوان
             if (hasBlankLine) {
-                i = j;
+                i++; // انتقل إلى السطر التالي بعد "العنوان" المحتمل وابدأ البحث من جديد
                 continue;
             }
-            i = j - 1;
 
-            const currentQuestion = {
-                question: questionText,
-                options: [],
-                correctAnswerIndex: undefined
-            };
-
-            // Collect options
-            let k = i + 1;
-            while (k < lines.length) {
-                const optionMatch = findMatch(lines[k], optionPatterns);
-                if (optionMatch) {
-                    currentQuestion.options.push(optionMatch[2].trim());
-                    k++;
-                } else {
-                    break;
+            // إذا وجدنا بداية للخيارات
+            if (potentialOptionsIndex !== -1) {
+                // قم بتجميع كل النص بين بداية السؤال وبداية الخيارات
+                for (let k = i + 1; k < potentialOptionsIndex; k++) {
+                    questionText += ' ' + lines[k].trim();
                 }
-            }
-            i = k - 1;
 
-            // Find answer
-            if (i + 1 < lines.length) {
-                const answerMatch = findMatch(lines[i + 1], answerPatterns);
-                if (answerMatch) {
-                    const answerText = (answerMatch[3] || answerMatch[2] || answerMatch[1]).trim();
-                    const correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === answerText.toLowerCase());
-                    if (correctIndex !== -1) {
-                        currentQuestion.correctAnswerIndex = correctIndex;
+                const currentQuestion = {
+                    question: questionText,
+                    options: [],
+                    correctAnswerIndex: undefined
+                };
+
+                // استمر من حيث توقفت لتجميع الخيارات
+                let k = potentialOptionsIndex;
+                while (k < lines.length) {
+                    const optionMatch = findMatch(lines[k], optionPatterns);
+                    if (optionMatch) {
+                        currentQuestion.options.push(optionMatch[2].trim());
+                        k++;
                     } else {
-                        const letterMatch = answerText.match(/^[A-Z]|\d/i);
-                        if (letterMatch) {
-                            const letterOrNumber = letterMatch[0].toUpperCase();
-                            const index = isNaN(parseInt(letterOrNumber)) ? letterOrNumber.charCodeAt(0) - 'A'.charCodeAt(0) : parseInt(letterOrNumber) - 1;
-                            if (index >= 0 && index < currentQuestion.options.length) {
-                                currentQuestion.correctAnswerIndex = index;
+                        break;
+                    }
+                }
+                
+                i = k - 1; // تحديث المؤشر الرئيسي
+
+                // البحث عن الإجابة بعد الخيارات
+                if (i + 1 < lines.length) {
+                    const answerMatch = findMatch(lines[i + 1], answerPatterns);
+                    if (answerMatch) {
+                        const answerText = (answerMatch[3] || answerMatch[2] || answerMatch[1]).trim();
+                        const correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === answerText.toLowerCase());
+                        if (correctIndex !== -1) {
+                            currentQuestion.correctAnswerIndex = correctIndex;
+                        } else {
+                            const letterMatch = answerText.match(/^[A-Z]|\d/i);
+                            if (letterMatch) {
+                                const letterOrNumber = letterMatch[0].toUpperCase();
+                                const index = isNaN(parseInt(letterOrNumber)) ? letterOrNumber.charCodeAt(0) - 'A'.charCodeAt(0) : parseInt(letterOrNumber) - 1;
+                                if (index >= 0 && index < currentQuestion.options.length) {
+                                    currentQuestion.correctAnswerIndex = index;
+                                }
                             }
                         }
+                        i++; // تحديث المؤشر ليتجاوز سطر الإجابة
                     }
-                    i++;
                 }
-            }
-            
-            if (currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
-                questions.push(currentQuestion);
+                
+                if (currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
+                    questions.push(currentQuestion);
+                }
             }
         }
         i++;
