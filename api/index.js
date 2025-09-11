@@ -138,13 +138,14 @@ function extractQuestions(text) {
         const questionMatch = findMatch(line, questionPatterns);
 
         if (questionMatch) {
-            // ✅ اجمع نص السؤال لحد أول اختيار أو إجابة
+            // ✅ أول ما يتعرف على بداية سؤال → يبدأ التجميع مباشرة
             let questionText = questionMatch[0].trim();
             let m = i + 1;
             while (m < lines.length) {
                 const nextLine = lines[m].trim();
                 if (!nextLine) { m++; continue; }
 
+                // وقف عند أول اختيار أو إجابة
                 if (findMatch(nextLine, optionPatterns) || findMatch(nextLine, answerPatterns)) {
                     break;
                 }
@@ -194,7 +195,7 @@ function extractQuestions(text) {
 
                 // ✅ تحقق من تناسق الاختيارات
                 if (!areOptionsConsistent(optionLines)) {
-                    console.log("📌 تم تجاهل العنوان (اختيارات غير متناسقة):", questionText);
+                    console.log("📌 تم تجاهل سؤال (اختيارات غير متناسقة):", questionText);
                     i++;
                     continue;
                 }
