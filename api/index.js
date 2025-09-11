@@ -12,7 +12,6 @@ const bot = new TelegramBot(token);
 const userState = {};
 
 // دالة مساعدة لإرسال الأسئلة
-// دالة مساعدة لإرسال الأسئلة (النسخة المحدثة)
 async function sendPolls(targetChatId, questions) {
     for (const q of questions) {
         if (q.question.length > 255) {
@@ -20,13 +19,13 @@ async function sendPolls(targetChatId, questions) {
             await bot.sendPoll(targetChatId, '.', q.options, {
                 type: 'quiz',
                 correct_option_id: q.correctAnswerIndex,
-                is_anonymous: true // <--- تم التعديل هنا
+                is_anonymous: true
             });
         } else {
             await bot.sendPoll(targetChatId, q.question, q.options, {
                 type: 'quiz',
                 correct_option_id: q.correctAnswerIndex,
-                is_anonymous: true // <--- تم التعديل هنا
+                is_anonymous: true
             });
         }
     }
@@ -58,16 +57,13 @@ module.exports = async (req, res) => {
                 const questions = extractQuestions(pdfData.text);
 
                 if (questions.length > 0) {
-                    // تخزين الأسئلة في حالة المستخدم
                     userState[userId] = { questions: questions };
-
                     const keyboard = {
                         inline_keyboard: [
                             [{ text: 'إرسال هنا 📤', callback_data: 'send_here' }],
-                            [{ text: 'إرسال لقناة/مجموعة  broadcasting', callback_data: 'send_to_channel' }]
+                            [{ text: 'إرسال لقناة/مجموعة 📢', callback_data: 'send_to_channel' }]
                         ]
                     };
-
                     await bot.sendMessage(chatId, `✅ تم العثور على ${questions.length} سؤالًا.\n\nاختر أين تريد إرسالها:`, {
                         reply_markup: keyboard
                     });
@@ -87,7 +83,6 @@ module.exports = async (req, res) => {
             const chatId = callbackQuery.message.chat.id;
             const data = callbackQuery.data;
 
-            // التأكد من أن الأسئلة لا تزال محفوظة
             if (!userState[userId] || !userState[userId].questions) {
                 await bot.answerCallbackQuery(callbackQuery.id, {
                     text: 'انتهت هذه الجلسة، يرجى إرسال الملف مرة أخرى.',
@@ -99,53 +94,60 @@ module.exports = async (req, res) => {
             if (data === 'send_here') {
                 await bot.answerCallbackQuery(callbackQuery.id, { text: 'جاري إرسال الأسئلة...' });
                 await sendPolls(chatId, userState[userId].questions);
-                delete userState[userId]; // حذف الحالة بعد الانتهاء
+                delete userState[userId];
             } else if (data === 'send_to_channel') {
-                // ضبط حالة المستخدم لانتظار ID القناة
                 userState[userId].awaiting = 'channel_id';
                 await bot.answerCallbackQuery(callbackQuery.id);
                 await bot.sendMessage(chatId, 'يرجى إرسال معرف (ID) القناة أو المجموعة الآن.\n(مثال: @username أو -100123456789)');
             }
         }
 
-        // 3️⃣ التعامل مع الرسائل النصية (قد تكون ID القناة)
+        // 3️⃣ التعامل مع الرسائل النصية (ID القناة)
         else if (update.message && update.message.text) {
             const message = update.message;
             const userId = message.from.id;
             const chatId = message.chat.id;
             const text = message.text;
 
-            // التحقق مما إذا كان المستخدم في حالة انتظار ID القناة
             if (userState[userId] && userState[userId].awaiting === 'channel_id') {
                 const targetChatId = text.trim();
                 const questions = userState[userId].questions;
 
-                await bot.sendMessage(chatId, `جاري التحقق من الصلاحيات في ${targetChatId}...`);
-
                 try {
-                    // الحصول على معلومات البوت داخل الشات المستهدف
+                    // --- التعديل الأول: التحقق من معلومات الشات ---
+                    const chatInfo = await bot.getChat(targetChatId);
+
+                    // --- التعديل الثاني: منع الإرسال للمستخدمين ---
+                    if (chatInfo.type === 'private') {
+                        await bot.sendMessage(chatId, '❌ لا يمكن إرسال الأسئلة إلى المستخدمين مباشرةً. يرجى استخدام معرف قناة أو مجموعة.');
+                        delete userState[userId];
+                        return; // إنهاء العملية
+                    }
+
+                    // --- التعديل الثالث: عرض معلومات الشات للتأكيد ---
+                    const chatType = chatInfo.type === 'channel' ? 'قناة' : 'مجموعة';
+                    await bot.sendMessage(chatId, `تم العثور على:\n\n👤 **الاسم:** ${chatInfo.title}\n**النوع:** ${chatType}\n\nجاري التحقق من الصلاحيات...`, {parse_mode: 'Markdown'});
+
                     const botInfo = await bot.getMe();
                     const botMember = await bot.getChatMember(targetChatId, botInfo.id);
-                    
+
                     if (botMember.status === 'administrator' || botMember.status === 'creator') {
-                        // التحقق من صلاحية إرسال استطلاعات
-                        if (botMember.can_send_polls) {
-                             await bot.sendMessage(chatId, '✅ الصلاحيات متوفرة. جاري إرسال الأسئلة...');
-                             await sendPolls(targetChatId, questions);
-                             await bot.sendMessage(chatId, '👍 تم الإرسال بنجاح!');
+                        if (botMember.can_post_messages && botMember.can_send_polls !== false) { // الصلاحية قد تكون غير محددة في المجموعات
+                            await bot.sendMessage(chatId, '✅ الصلاحيات متوفرة. جاري إرسال الأسئلة...');
+                            await sendPolls(targetChatId, questions);
+                            await bot.sendMessage(chatId, '👍 تم الإرسال بنجاح!');
                         } else {
-                            await bot.sendMessage(chatId, '⚠️ ليس لدي صلاحية "إرسال استطلاعات" في هذه القناة/المجموعة.');
+                            await bot.sendMessage(chatId, '⚠️ ليس لدي صلاحية "نشر الرسائل" أو "إرسال استطلاعات" في هذه القناة/المجموعة.');
                         }
                     } else {
-                         await bot.sendMessage(chatId, '⚠️ أنا لست مشرفًا (Admin) في هذه القناة/المجموعة.');
+                        await bot.sendMessage(chatId, '⚠️ أنا لست مشرفًا (Admin) في هذه القناة/المجموعة.');
                     }
 
                 } catch (error) {
                     console.error(error);
-                    // غالبًا ما يحدث الخطأ إذا كان البوت غير موجود في القناة
-                    await bot.sendMessage(chatId, '❌ خطأ! لا يمكنني الوصول إلى هذه القناة/المجموعة. تأكد من أنني عضو فيها وأن المعرف صحيح.');
+                    await bot.sendMessage(chatId, '❌ خطأ! لم أتمكن من العثور على هذا الشات. تأكد أن المعرف صحيح وأنني عضو فيه.');
                 } finally {
-                    delete userState[userId]; // حذف الحالة بعد الانتهاء
+                    delete userState[userId];
                 }
             }
         }
@@ -156,130 +158,66 @@ module.exports = async (req, res) => {
     res.status(200).send('OK');
 };
 
-
-// =================================================================
-//        دالة استخراج الأسئلة من النص (بدون تغيير)
-// =================================================================
+// ... (دالة extractQuestions تبقى كما هي هنا)
 function extractQuestions(text) {
     const questions = [];
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\f/g, '\n').replace(/\u2028|\u2029/g, '\n');
     const lines = text.split('\n').map(l => l.trim());
     let i = 0;
-    const letterOptionPatterns = [/^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i, /^\s*\[([A-Z])\]\s*(.+)/i, /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i, /^\s*([A-Z])\s+(.+)/i, ];
+    const letterOptionPatterns = [/^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i, /^\s*\[([A-Z])\]\s*(.+)/i, /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i, /^\s*([A-Z])\s+(.+)/i,];
     const numberOptionPatterns = [/^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/, /^\s*(\d+)\s+(.+)/];
     const optionPatterns = [...letterOptionPatterns, ...numberOptionPatterns];
     const answerPatterns = [/^(Answer|Correct Answer|Solution|Ans|Sol):?/i];
-
-    function findMatch(line, patterns) {
-        for (const pattern of patterns) {
-            const match = line.match(pattern);
-            if (match) return match;
-        }
-        return null;
-    }
-
-    function areOptionsConsistent(optionLines) {
-        if (optionLines.length === 0) return false;
-        let style = null;
-        for (const line of optionLines) {
-            let currentStyle = null;
-            if (findMatch(line, letterOptionPatterns)) {
-                currentStyle = 'letters';
-            } else if (findMatch(line, numberOptionPatterns)) {
-                currentStyle = 'numbers';
-            } else {
-                return false;
-            }
-            if (!style) {
-                style = currentStyle;
-            } else if (style !== currentStyle) {
-                return false;
-            }
-        }
-        return true;
-    }
-
+    function findMatch(line, patterns) { for (const pattern of patterns) { const match = line.match(pattern); if (match) return match; } return null; }
+    function areOptionsConsistent(optionLines) { if (optionLines.length === 0) return false; let style = null; for (const line of optionLines) { let currentStyle = null; if (findMatch(line, letterOptionPatterns)) { currentStyle = 'letters'; } else if (findMatch(line, numberOptionPatterns)) { currentStyle = 'numbers'; } else { return false; } if (!style) { style = currentStyle; } else if (style !== currentStyle) { return false; } } return true; }
     while (i < lines.length) {
         const line = lines[i];
-        if (!line) {
-            i++;
-            continue;
-        }
+        if (!line) { i++; continue; }
         let questionText = line.trim();
         let potentialOptionsIndex = -1;
         let j = i + 1;
         while (j < lines.length) {
             const currentLine = lines[j].trim();
-            if (!currentLine) {
-                j++;
-                continue;
-            }
-            if (findMatch(currentLine, optionPatterns) || findMatch(currentLine, answerPatterns)) {
-                if (findMatch(currentLine, optionPatterns)) {
-                    potentialOptionsIndex = j;
-                }
-                break;
-            }
+            if (!currentLine) { j++; continue; }
+            if (findMatch(currentLine, optionPatterns) || findMatch(currentLine, answerPatterns)) { if (findMatch(currentLine, optionPatterns)) { potentialOptionsIndex = j; } break; }
             questionText += ' ' + currentLine;
             j++;
         }
         if (potentialOptionsIndex !== -1) {
-            const currentQuestion = {
-                question: questionText,
-                options: [],
-                correctAnswerIndex: undefined
-            };
+            const currentQuestion = { question: questionText, options: [], correctAnswerIndex: undefined };
             let k = potentialOptionsIndex;
             const optionLines = [];
             while (k < lines.length) {
                 const optLine = lines[k].trim();
-                if (findMatch(optLine, answerPatterns)) {
-                    break;
-                }
+                if (findMatch(optLine, answerPatterns)) { break; }
                 const optionMatch = findMatch(optLine, optionPatterns);
                 if (optionMatch) {
                     optionLines.push(optLine);
                     const optionText = optionMatch[2] ? optionMatch[2].trim() : optionMatch[1].trim();
                     currentQuestion.options.push(optionText);
                     k++;
-                } else {
-                    break;
-                }
+                } else { break; }
             }
-            if (!areOptionsConsistent(optionLines)) {
-                i = i + 1;
-                continue;
-            }
+            if (!areOptionsConsistent(optionLines)) { i = i + 1; continue; }
             i = k - 1;
             if (i + 1 < lines.length) {
                 const answerMatch = findMatch(lines[i + 1], answerPatterns);
                 if (answerMatch) {
                     const answerLine = lines[i + 1];
                     let answerText = answerLine.replace(/^(Answer|Correct Answer|Solution|Ans|Sol):?/i, '').trim();
-                    let correctIndex = currentQuestion.options.findIndex(
-                        opt => opt.toLowerCase() === answerText.toLowerCase()
-                    );
+                    let correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === answerText.toLowerCase());
                     if (correctIndex === -1) {
                         const letterMatch = answerText.match(/^[A-Z]|\d/i);
                         if (letterMatch) {
                             const letterOrNumber = letterMatch[0].toUpperCase();
-                            const index = isNaN(parseInt(letterOrNumber)) ?
-                                letterOrNumber.charCodeAt(0) - 'A'.charCodeAt(0) :
-                                parseInt(letterOrNumber) - 1;
-                            if (index >= 0 && index < currentQuestion.options.length) {
-                                correctIndex = index;
-                            }
+                            const index = isNaN(parseInt(letterOrNumber)) ? letterOrNumber.charCodeAt(0) - 'A'.charCodeAt(0) : parseInt(letterOrNumber) - 1;
+                            if (index >= 0 && index < currentQuestion.options.length) { correctIndex = index; }
                         }
                     }
-                    if (correctIndex !== -1) {
-                        currentQuestion.correctAnswerIndex = correctIndex;
-                        i++;
-                    }
+                    if (correctIndex !== -1) { currentQuestion.correctAnswerIndex = correctIndex; i++; }
                 }
             }
-            if (currentQuestion.options.length > 1 && currentQuestion.correctAnswerIndex !== undefined) {
-                questions.push(currentQuestion);
-            }
+            if (currentQuestion.options.length > 1 && currentQuestion.correctAnswerIndex !== undefined) { questions.push(currentQuestion); }
         }
         i++;
     }
