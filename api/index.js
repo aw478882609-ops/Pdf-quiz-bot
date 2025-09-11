@@ -56,6 +56,7 @@ module.exports = async (req, res) => {
     }
     res.status(200).send('OK');
 };
+
 function extractQuestions(text) {
     const questions = [];
     const lines = text.split('\n').map(line => line.trim());
@@ -94,6 +95,13 @@ function extractQuestions(text) {
 
         if (questionMatch) {
             let questionText = questionMatch[0].trim();
+
+            // ✅ لو السطر اللي بعد "بداية السؤال" فاضي → ده عنوان مش سؤال
+            if (i + 1 < lines.length && lines[i + 1].trim().length === 0) {
+                i++;
+                continue;
+            }
+
             let potentialOptionsIndex = -1;
             let blankLineBetween = false;
 
@@ -101,7 +109,6 @@ function extractQuestions(text) {
             let j = i + 1;
             while (j < lines.length) {
                 if (lines[j].trim().length === 0) {
-                    // سطر فاضي
                     blankLineBetween = true;
                     break;
                 }
@@ -112,14 +119,14 @@ function extractQuestions(text) {
                 j++;
             }
 
-            // لو لقيت سطر فاضي قبل ما توصل للخيارات → ده عنوان مش سؤال
-            if (blankLineBetween && (potentialOptionsIndex === -1 || j > potentialOptionsIndex)) {
-                i++; 
-                continue; // تجاهل وابدأ من السطر اللي بعده
+            // ✅ لو فيه سطر فاضي بين بداية السؤال والاختيارات → تجاهل (عنوان)
+            if (blankLineBetween) {
+                i++;
+                continue;
             }
 
             if (potentialOptionsIndex !== -1) {
-                // اجمع السطور ما بين السؤال والاختيارات
+                // اجمع النص بين بداية السؤال وبداية الخيارات
                 for (let k = i + 1; k < potentialOptionsIndex; k++) {
                     if (lines[k].trim().length > 0) {
                         questionText += ' ' + lines[k].trim();
@@ -137,7 +144,6 @@ function extractQuestions(text) {
                 while (k < lines.length) {
                     const optionMatch = findMatch(lines[k], optionPatterns);
                     if (optionMatch) {
-                        // خُد النص بتاع الاختيار (group 2 أو fallback group 1)
                         const optionText = optionMatch[2] ? optionMatch[2].trim() : optionMatch[1].trim();
                         currentQuestion.options.push(optionText);
                         k++;
@@ -146,14 +152,16 @@ function extractQuestions(text) {
                     }
                 }
 
-                i = k - 1; // حط المؤشر عند آخر اختيار
+                i = k - 1; // المؤشر عند آخر اختيار
 
-                // دور على الإجابة
+                // دور على الإجابة بعد الاختيارات
                 if (i + 1 < lines.length) {
                     const answerMatch = findMatch(lines[i + 1], answerPatterns);
                     if (answerMatch) {
                         const answerText = (answerMatch[3] || answerMatch[2] || answerMatch[1]).trim();
-                        let correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === answerText.toLowerCase());
+                        let correctIndex = currentQuestion.options.findIndex(
+                            opt => opt.toLowerCase() === answerText.toLowerCase()
+                        );
 
                         if (correctIndex === -1) {
                             const letterMatch = answerText.match(/^[A-Z]|\d/i);
