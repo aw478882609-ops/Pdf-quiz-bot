@@ -62,12 +62,12 @@ module.exports = async (req, res) => {
 };
 
 // =================================================================
-//                دالة استخراج الأسئلة من النص
+//        دالة استخراج الأسئلة من النص (النسخة النهائية)
 // =================================================================
 function extractQuestions(text) {
     const questions = [];
 
-    // 🧹 تنظيف النص
+    // 🧹 تنظيف النص لتوحيد نهايات الأسطر
     text = text
         .replace(/\r\n/g, '\n')
         .replace(/\r/g, '\n')
@@ -77,15 +77,18 @@ function extractQuestions(text) {
     const lines = text.split('\n').map(l => l.trim());
     let i = 0;
 
-    // ✅ أنماط الخيارات
-    const optionPatterns = [
-        /^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i, 
-        /^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/,   
-        /^\s*\[([A-Z])\]\s*(.+)/i,                 
-        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i,           
-        /^\s*([A-Z])\s+(.+)/i,                     
-        /^\s*(\d+)\s+(.+)/                         
+    // ✅ أنماط الاختيارات (مقسمة حسب النوع لدعم جميع الرموز)
+    const letterOptionPatterns = [
+        /^\s*([A-Z])[\)\.\/\-_\^&@':;"\\]\s*(.+)/i,
+        /^\s*\[([A-Z])\]\s*(.+)/i,
+        /^\s*\(\s*([A-Z])\s*\)\s*(.+)/i,
+        /^\s*([A-Z])\s+(.+)/i,
     ];
+    const numberOptionPatterns = [
+        /^\s*(\d+)[\)\.\/\-_\^&@':;"\\]\s*(.+)/,
+        /^\s*(\d+)\s+(.+)/
+    ];
+    const optionPatterns = [...letterOptionPatterns, ...numberOptionPatterns];
 
     // ✅ أنماط الإجابة
     const answerPatterns = [
@@ -100,23 +103,29 @@ function extractQuestions(text) {
         return null;
     }
 
-    // ✅ التحقق من تناسق الاختيارات
+    // ✅ التحقق من تناسق الاختيارات (يدعم جميع الرموز)
     function areOptionsConsistent(optionLines) {
         if (optionLines.length === 0) return false;
-        let style = null;
+        let style = null; // سيتم تعيينه إلى 'letters' أو 'numbers'
 
         for (const line of optionLines) {
-            if (/^[A-Z][\)\.\s]/.test(line)) {
-                if (!style) style = "letters";
-                if (style !== "letters") return false;
-            } else if (/^\d+[\)\.\s]/.test(line)) {
-                if (!style) style = "numbers";
-                if (style !== "numbers") return false;
+            let currentStyle = null;
+
+            if (findMatch(line, letterOptionPatterns)) {
+                currentStyle = 'letters';
+            } else if (findMatch(line, numberOptionPatterns)) {
+                currentStyle = 'numbers';
             } else {
-                return false;
+                return false; // لا يطابق أي نمط معروف
+            }
+
+            if (!style) {
+                style = currentStyle; // تعيين النمط الأساسي من أول اختيار
+            } else if (style !== currentStyle) {
+                return false; // النمط الحالي مختلف عن الأساسي (غير متناسق)
             }
         }
-        return true;
+        return true; // جميع الاختيارات متناسقة
     }
 
     while (i < lines.length) {
@@ -126,30 +135,29 @@ function extractQuestions(text) {
             continue;
         }
 
-        // ✅ اعتبر أي سطر بداية محتملة لسؤال
+        // 🧠 اعتبار أي سطر بداية محتملة لسؤال
         let questionText = line.trim();
         let potentialOptionsIndex = -1;
 
-        // ✅ اجمع النصوص لحد أول اختيار أو إجابة
+        //  собирать (تجميع) نصوص السؤال متعددة الأسطر
         let j = i + 1;
         while (j < lines.length) {
             const currentLine = lines[j].trim();
-
             if (!currentLine) {
                 j++;
                 continue;
             }
-
             if (findMatch(currentLine, optionPatterns) || findMatch(currentLine, answerPatterns)) {
-                potentialOptionsIndex = findMatch(currentLine, optionPatterns) ? j : -1;
+                if (findMatch(currentLine, optionPatterns)) {
+                    potentialOptionsIndex = j;
+                }
                 break;
             }
-
             questionText += ' ' + currentLine;
             j++;
         }
-
-        // ✅ لو لقينا بداية اختيارات
+        
+        // 🔍 إذا تم العثور على بداية للاختيارات
         if (potentialOptionsIndex !== -1) {
             const currentQuestion = {
                 question: questionText,
@@ -157,7 +165,7 @@ function extractQuestions(text) {
                 correctAnswerIndex: undefined
             };
 
-            // ✅ اجمع الاختيارات لحد ما يقابل إجابة
+            // 📚 تجميع الاختيارات
             let k = potentialOptionsIndex;
             const optionLines = [];
             while (k < lines.length) {
@@ -165,7 +173,6 @@ function extractQuestions(text) {
                 if (findMatch(optLine, answerPatterns)) {
                     break;
                 }
-
                 const optionMatch = findMatch(optLine, optionPatterns);
                 if (optionMatch) {
                     optionLines.push(optLine);
@@ -177,22 +184,21 @@ function extractQuestions(text) {
                 }
             }
 
-            // ✅ تحقق من تناسق الاختيارات
+            // 🚦 التحقق من تناسق الاختيارات قبل المتابعة
             if (!areOptionsConsistent(optionLines)) {
-                // 👇 تجاهل بداية السؤال الحالية فقط
                 i = i + 1;
                 continue;
             }
 
             i = k - 1;
 
-            // ✅ دور على الإجابة
+            // 🎯 البحث عن الإجابة الصحيحة
             if (i + 1 < lines.length) {
                 const answerMatch = findMatch(lines[i + 1], answerPatterns);
                 if (answerMatch) {
                     const answerLine = lines[i + 1];
                     let answerText = answerLine.replace(/^(Answer|Correct Answer|Solution|Ans|Sol):?/i, '').trim();
-
+                    
                     let correctIndex = currentQuestion.options.findIndex(
                         opt => opt.toLowerCase() === answerText.toLowerCase()
                     );
@@ -217,11 +223,10 @@ function extractQuestions(text) {
                 }
             }
 
-            if (currentQuestion.options.length > 0 && currentQuestion.correctAnswerIndex !== undefined) {
+            if (currentQuestion.options.length > 1 && currentQuestion.correctAnswerIndex !== undefined) {
                 questions.push(currentQuestion);
             }
         }
-
         i++;
     }
 
