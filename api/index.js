@@ -273,7 +273,8 @@ function extractQuestions(text) {
         const line = lines[i];
         if (!line) { i++; continue; }
 
-        const isQuestionStart = findMatch(line, questionPatterns) || (lines[i + 1] && findMatch(lines[i + 1], optionPatterns) && !findMatch(line, optionPatterns) && !findMatch(line, answerPatterns));
+        const optionInNextTenLines = lines.slice(i + 1, i + 11).some(l => findMatch(l, optionPatterns));
+const isQuestionStart = findMatch(line, questionPatterns) || (optionInNextTenLines && !findMatch(line, optionPatterns) && !findMatch(line, answerPatterns));
         if (!isQuestionStart) { i++; continue; }
 
         let questionText = line;
