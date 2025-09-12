@@ -120,60 +120,83 @@ if (update.message && update.message.poll) {
         }
 
         // 2️⃣ التعامل مع الضغط على الأزرار
-        else if (update.callback_query) {
-            const callbackQuery = update.callback_query;
-            const userId = callbackQuery.from.id;
-            const chatId = callbackQuery.message.chat.id;
-            const messageId = callbackQuery.message.message_id;
-            const data = callbackQuery.data;
+       // 2️⃣ التعامل مع الضغط على الأزرار (نسخة مُصححة)
+else if (update.callback_query) {
+    const callbackQuery = update.callback_query;
+    const userId = callbackQuery.from.id;
+    const chatId = callbackQuery.message.chat.id;
+    const messageId = callbackQuery.message.message_id;
+    const data = callbackQuery.data;
+    const gasWebAppUrl = process.env.GAS_WEB_APP_URL;
 
-            if (!userState[userId] || !userState[userId].questions) {
-                await bot.answerCallbackQuery(callbackQuery.id, { text: 'انتهت هذه الجلسة، يرجى إرسال الملف مرة أخرى.', show_alert: true });
-                await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
-                return res.status(200).send('OK');
-            }
+    // --- المنطق الجديد: التحقق من أزرار الاختبارات أولاً ---
+    if (data.startsWith('poll_answer_')) {
+        if (!userState[userId] || userState[userId].awaiting !== 'poll_manual_answer') {
+            await bot.answerCallbackQuery(callbackQuery.id, { text: 'هذه الجلسة انتهت.', show_alert: true });
+            await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
+            return res.status(200).send('OK');
+        }
 
-            const gasWebAppUrl = process.env.GAS_WEB_APP_URL;
+        const { poll_data } = userState[userId];
+        if (data !== 'poll_answer_none') {
+             poll_data.correctOptionId = parseInt(data.split('_')[2], 10);
+        } else {
+            poll_data.correctOptionId = null;
+        }
 
-            if (!gasWebAppUrl && (data === 'send_here' || data === 'confirm_send')) {
-                await bot.editMessageText('⚠️ خطأ في الإعدادات: رابط خدمة الإرسال الخارجية غير موجود.', { chat_id: chatId, message_id: messageId });
-                return res.status(200).send('OK');
-            }
+        const formattedText = formatQuizText(poll_data);
 
-            if (data === 'send_here') {
-                const { questions } = userState[userId];
-                const payload = {
-                    questions, targetChatId: chatId, originalChatId: chatId, startIndex: 0,
-                    chatType: 'private' // إرسال النوع كمحادثة خاصة
-                };
+        await bot.editMessageText(formattedText, {
+            chat_id: chatId,
+            message_id: messageId
+        });
+
+        delete userState[userId];
+        await bot.answerCallbackQuery(callbackQuery.id);
+    }
+    // --- ثانياً: التعامل مع الأزرار القديمة الخاصة بملفات PDF ---
+    else {
+        // الآن نضع التحقق القديم هنا، حيث ينتمي
+        if (!userState[userId] || !userState[userId].questions) {
+            await bot.answerCallbackQuery(callbackQuery.id, { text: 'انتهت جلسة استخراج الملف، يرجى إرسال الملف مرة أخرى.', show_alert: true });
+            await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
+            return res.status(200).send('OK');
+        }
+
+        if (!gasWebAppUrl && (data === 'send_here' || data === 'confirm_send')) {
+            await bot.editMessageText('⚠️ خطأ في الإعدادات: رابط خدمة الإرسال الخارجية غير موجود.', { chat_id: chatId, message_id: messageId });
+            return res.status(200).send('OK');
+        }
+
+        if (data === 'send_here') {
+            const { questions } = userState[userId];
+            const payload = { questions, targetChatId: chatId, originalChatId: chatId, startIndex: 0, chatType: 'private' };
+            axios.post(gasWebAppUrl, payload).catch(err => console.error("Error calling GAS:", err.message));
+            await bot.answerCallbackQuery(callbackQuery.id);
+            await bot.editMessageText(`✅ تم إرسال المهمة للخدمة الخارجية.\n\nسيتم إرسال ${questions.length} سؤالًا هنا في الخلفية.`, { chat_id: chatId, message_id: messageId });
+            delete userState[userId];
+
+        } else if (data === 'send_to_channel') {
+            userState[userId].awaiting = 'channel_id';
+            await bot.answerCallbackQuery(callbackQuery.id);
+            await bot.editMessageText('يرجى إرسال معرف (ID) القناة أو المجموعة الآن.\n(مثال: @username أو -100123456789)', { chat_id: chatId, message_id: messageId });
+
+        } else if (data === 'confirm_send') {
+            if (userState[userId] && userState[userId].awaiting === 'send_confirmation') {
+                const { questions, targetChatId, targetChatTitle, chatType } = userState[userId];
+                const payload = { questions, targetChatId, originalChatId: chatId, startIndex: 0, chatType };
                 axios.post(gasWebAppUrl, payload).catch(err => console.error("Error calling GAS:", err.message));
                 await bot.answerCallbackQuery(callbackQuery.id);
-                await bot.editMessageText(`✅ تم إرسال المهمة للخدمة الخارجية.\n\nسيتم إرسال ${questions.length} سؤالًا هنا في الخلفية.`, { chat_id: chatId, message_id: messageId });
-                delete userState[userId];
-
-            } else if (data === 'send_to_channel') {
-                userState[userId].awaiting = 'channel_id';
-                await bot.answerCallbackQuery(callbackQuery.id);
-                await bot.editMessageText('يرجى إرسال معرف (ID) القناة أو المجموعة الآن.\n(مثال: @username أو -100123456789)', { chat_id: chatId, message_id: messageId });
-
-            } else if (data === 'confirm_send') {
-                if (userState[userId] && userState[userId].awaiting === 'send_confirmation') {
-                    const { questions, targetChatId, targetChatTitle, chatType } = userState[userId];
-                    const payload = {
-                        questions, targetChatId, originalChatId: chatId, startIndex: 0,
-                        chatType // إرسال نوع المحادثة (channel, supergroup)
-                    };
-                    axios.post(gasWebAppUrl, payload).catch(err => console.error("Error calling GAS:", err.message));
-                    await bot.answerCallbackQuery(callbackQuery.id);
-                    await bot.editMessageText(`✅ تم إرسال المهمة للخدمة الخارجية.\n\nسيتم إرسال ${questions.length} سؤالًا في الخلفية إلى "${targetChatTitle}".`, { chat_id: chatId, message_id: messageId });
-                    delete userState[userId];
-                }
-            } else if (data === 'cancel_send') {
-                await bot.answerCallbackQuery(callbackQuery.id);
-                await bot.editMessageText('❌ تم إلغاء العملية.', { chat_id: chatId, message_id: messageId });
+                await bot.editMessageText(`✅ تم إرسال المهمة للخدمة الخارجية.\n\nسيتم إرسال ${questions.length} سؤالًا في الخلفية إلى "${targetChatTitle}".`, { chat_id: chatId, message_id: messageId });
                 delete userState[userId];
             }
+        } else if (data === 'cancel_send') {
+            await bot.answerCallbackQuery(callbackQuery.id);
+            await bot.editMessageText('❌ تم إلغاء العملية.', { chat_id: chatId, message_id: messageId });
+            delete userState[userId];
         }
+    }
+}
 
         // 3️⃣ التعامل مع الرسائل النصية (ID القناة)
         else if (update.message && update.message.text && !update.message.document) {
