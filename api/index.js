@@ -209,61 +209,59 @@ function extractQuestions(text) {
     }
 
     // ==================== بداية الجزء المعدل ====================
-    
-    // [تعديل] منطق جديد للبحث المتقدم عن كتلة السؤال
+
     while (i < lines.length) {
         const startLine = lines[i];
-        // السطر الحالي لا يمكن أن يكون بداية سؤال إذا كان خيارًا أو إجابة أو فارغًا
+        // تجاهل الأسطر التي لا يمكن أن تكون بداية سؤال
         if (!startLine || findMatch(startLine, optionPatterns) || findMatch(startLine, answerPatterns)) {
             i++;
             continue;
         }
 
-        // 1. ابحث للأمام عن بداية مجموعة خيارات صالحة ومتسلسلة
-        let optionsStartIndex = -1;
+        // 1. ابحث عن *أول* ظهور لسطر يبدو كخيار
+        let potentialOptionsStartIndex = -1;
         for (let j = i + 1; j < lines.length; j++) {
             if (findMatch(lines[j], optionPatterns)) {
-                // وجدنا بداية محتملة للخيارات، الآن تحقق من صحة التسلسل
-                const potentialOptionLines = [];
-                let k = j;
-                while (k < lines.length && findMatch(lines[k], optionPatterns)) {
-                    potentialOptionLines.push(lines[k]);
-                    k++;
-                }
-                if (validateOptionsSequence(potentialOptionLines)) {
-                    optionsStartIndex = j; // تم التأكيد، هذه هي بداية الخيارات
-                    break; // اخرج من حلقة البحث عن الخيارات
-                }
-                // إذا لم يكن التسلسل صالحًا، تابع البحث من بعد هذه الكتلة غير الصالحة
-                j = k - 1; 
+                potentialOptionsStartIndex = j;
+                break; // وجدنا بداية محتملة، توقف عن البحث
             }
         }
 
-        // إذا لم يتم العثور على خيارات تالية صالحة، فإن السطر 'i' ليس بداية سؤال
-        if (optionsStartIndex === -1) {
+        // إذا لم نجد أي خيارات تالية على الإطلاق، تجاهل السطر الحالي وانتقل للتالي
+        if (potentialOptionsStartIndex === -1) {
             i++;
             continue;
         }
 
-        // 2. لقد وجدنا كتلة سؤال صالحة.
-        // نص السؤال هو كل الأسطر من 'i' إلى ما قبل بداية الخيارات
-        const questionText = lines.slice(i, optionsStartIndex).join(' ').trim();
-
-        // 3. استخراج الخيارات والإجابة (باستخدام نفس المنطق القوي السابق)
-        const currentQuestion = { question: questionText, options: [], correctAnswerIndex: undefined };
-        const optionLines = [];
-        let k = optionsStartIndex;
-
-        while (k < lines.length) {
-            const optLine = lines[k];
-            if (!optLine || findMatch(optLine, answerPatterns)) break;
-            const optionMatch = findMatch(optLine, optionPatterns);
-            if (optionMatch) {
-                optionLines.push(optLine);
-                currentQuestion.options.push(optionMatch[2].trim());
-                k++;
-            } else { break; } // توقف إذا لم يعد السطر خيارًا
+        // 2. اجمع كل الخيارات المتتالية من هذه النقطة للتحقق منها
+        const potentialOptionLines = [];
+        let k = potentialOptionsStartIndex;
+        while (k < lines.length && findMatch(lines[k], optionPatterns)) {
+            potentialOptionLines.push(lines[k]);
+            k++;
         }
+
+        // 3. [هذا هو التغيير المطلوب] تحقق من دقة وتسلسل الخيارات
+        if (!validateOptionsSequence(potentialOptionLines)) {
+            // إذا كانت الخيارات غير دقيقة، تجاهل السطر الحالي 'i' كبداية محتملة
+            // وابدأ البحث من جديد من السطر التالي مباشرة 'i + 1'
+            i++;
+            continue;
+        }
+        
+        // 4. إذا كانت الخيارات دقيقة، أكمل عملية الاستخراج كالمعتاد
+        const optionsStartIndex = potentialOptionsStartIndex;
+        const questionText = lines.slice(i, optionsStartIndex).join(' ').trim();
+        const currentQuestion = { question: questionText, options: [], correctAnswerIndex: undefined };
+        const optionLines = potentialOptionLines; // استخدم الخيارات التي تم التحقق منها بالفعل
+        
+        k = optionsStartIndex + optionLines.length; // حدّث المؤشر إلى ما بعد الخيارات
+
+        // أضف نصوص الخيارات فقط إلى السؤال
+        optionLines.forEach(line => {
+            const match = findMatch(line, optionPatterns);
+            currentQuestion.options.push(match[2].trim());
+        });
         
         // البحث عن الإجابة وتحديدها
         if (k < lines.length && findMatch(lines[k], answerPatterns)) {
@@ -285,14 +283,12 @@ function extractQuestions(text) {
             if (correctIndex >= 0 && correctIndex < currentQuestion.options.length) {
                 currentQuestion.correctAnswerIndex = correctIndex;
             }
-            // ابدأ البحث عن السؤال التالي من السطر الذي يلي الإجابة
             i = k + 1;
         } else {
-            // إذا لم توجد إجابة، ابدأ البحث من السطر الذي يلي الخيارات
             i = k;
         }
 
-        // 4. أضف السؤال إذا كان مكتملاً
+        // 5. أضف السؤال إذا كان مكتملاً
         if (currentQuestion.options.length > 1 && currentQuestion.correctAnswerIndex !== undefined) {
             questions.push(currentQuestion);
         }
