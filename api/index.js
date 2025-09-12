@@ -21,6 +21,56 @@ module.exports = async (req, res) => {
         const body = await micro.json(req);
         const update = body;
 
+        // ... داخل module.exports
+
+// 🗳️ التعامل مع الاختبارات والاستطلاعات
+if (update.message && update.message.poll) {
+    const message = update.message;
+    const chatId = message.chat.id;
+    const userId = message.from.id;
+    const poll = message.poll;
+
+    const quizData = {
+        question: poll.question,
+        options: poll.options.map(opt => opt.text),
+        correctOptionId: poll.correct_option_id,
+        explanation: poll.explanation || null
+    };
+
+    // الحالة الأولى: إذا كان اختبارًا (Quiz)، حوّله مباشرة
+    if (poll.type === 'quiz') {
+        const formattedText = formatQuizText(quizData);
+        await bot.sendMessage(chatId, formattedText, { parse_mode: 'Markdown' });
+    }
+    // الحالة الثانية: إذا كان استطلاعًا (Poll)، اسأل المستخدم عن الحل
+    else if (poll.type === 'regular') {
+        userState[userId] = {
+            awaiting: 'poll_manual_answer',
+            poll_data: quizData
+        };
+
+        const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+        const keyboardRows = [];
+        const optionButtons = quizData.options.map((option, index) => ({
+            text: optionLetters[index] || (index + 1),
+            callback_data: `poll_answer_${index}`
+        }));
+        
+        for (let i = 0; i < optionButtons.length; i += 5) {
+            keyboardRows.push(optionButtons.slice(i, i + 5));
+        }
+        keyboardRows.push([{ text: '📋 استطلاع بدون حل', callback_data: 'poll_answer_none' }]);
+
+        // نرد على رسالة الاستطلاع نفسها بالأزرار
+        await bot.sendMessage(chatId, 'هذا استطلاع عادي. يرجى تحديد الإجابة الصحيحة لتحويله:', {
+            reply_to_message_id: message.message_id,
+            reply_markup: {
+                inline_keyboard: keyboardRows
+            }
+        });
+    }
+    return res.status(200).send('OK');
+}
         // 1️⃣ التعامل مع الملفات المرسلة
         if (update.message && update.message.document) {
             const message = update.message;
@@ -121,6 +171,33 @@ module.exports = async (req, res) => {
                 await bot.editMessageText('❌ تم إلغاء العملية.', { chat_id: chatId, message_id: messageId });
                 delete userState[userId];
             }
+            // ... داخل else if (update.callback_query)
+
+// 🔘 التعامل مع أزرار تحديد إجابة الاستطلاع اليدوية
+else if (data.startsWith('poll_answer_')) {
+    if (!userState[userId] || userState[userId].awaiting !== 'poll_manual_answer') {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'هذه الجلسة انتهت.', show_alert: true });
+        await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
+        return res.status(200).send('OK');
+    }
+
+    const { poll_data } = userState[userId];
+    
+    if (data === 'poll_answer_none') {
+        poll_data.correctOptionId = null;
+    } else {
+        poll_data.correctOptionId = parseInt(data.split('_')[2], 10);
+    }
+
+    const formattedText = formatQuizText(poll_data);
+
+    // نرسل رسالة جديدة بالحل، ونحذف رسالة الأزرار
+    await bot.sendMessage(chatId, formattedText, { parse_mode: 'Markdown' });
+    await bot.deleteMessage(chatId, messageId);
+
+    delete userState[userId];
+    await bot.answerCallbackQuery(callbackQuery.id);
+}
         }
 
         // 3️⃣ التعامل مع الرسائل النصية (ID القناة)
@@ -371,4 +448,26 @@ const isQuestionStart = findMatch(line, questionPatterns) || (optionInFollowingL
         }
     }
     return questions;
+}
+
+// ... بعد نهاية دالة extractQuestions
+
+function formatQuizText(quizData) {
+    let formattedText = `*${quizData.question}*\n\n`;
+    const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+
+    quizData.options.forEach((optionText, optIndex) => {
+        formattedText += `- ${optionLetters[optIndex] || (optIndex + 1)}. ${optionText}\n`;
+    });
+
+    if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
+        const correctLetter = optionLetters[quizData.correctOptionId];
+        const correctText = quizData.options[quizData.correctOptionId];
+        formattedText += `\n*Answer:* ${correctLetter}. ${correctText}`;
+    }
+
+    if (quizData.explanation) {
+        formattedText += `\n*Explanation:* ${quizData.explanation}`;
+    }
+    return formattedText;
 }
