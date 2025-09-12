@@ -186,24 +186,43 @@ function extractQuestions(text) {
 
     // [تجميع] كل الأنماط الشاملة للأسئلة والخيارات
     const questionPatterns = [/^(Q|Question|Problem|Quiz|السؤال)?\s*\d+[\s\.\)\]]/i];
+    // النسخة النهائية والمُدمجة
+const letterOptionPatterns = [
+    // نمط مرن وشامل يغطي:
+    // "A." أو "A)" أو "A-"
+    // وأيضًا "- A." أو "* B." (مع رمز في البداية)
+    /^\s*[\-\*]?\s*([A-Z])[\.\)\-]\s*(.+)/i,
+
+    // نمط منفصل ومهم لدعم "A - " (مع مسافات حول الشرطة)
+    /^\s*([A-Z])\s*-\s*(.+)/i,
+
+    // نمط الأقواس الذي كان موجودًا بالفعل مثل "(A)" أو "[B]"
+    /^\s*[\(\[\{]([A-Z])[\)\]\}]\s*(.+)/i,
+];
+    // النسخة النهائية والمُدمجة
+const numberOptionPatterns = [
+    // نمط مرن وشامل يغطي:
+    // "1." أو "1)" أو "1-"
+    // وأيضًا "- 1." أو "* 2." (مع رمز في البداية)
+    /^\s*[\-\*]?\s*(\d+)[\.\)\-]\s*(.+)/,
+
+    // نمط منفصل ومهم لدعم "1 - " (مع مسافات حول الشرطة)
+    /^\s*(\d+)\s*-\s*(.+)/,
+
+    // نمط الأقواس الذي كان موجودًا بالفعل مثل "(1)" أو "[2]"
+    /^\s*[\(\[\{](\d+)[\)\]\}]\s*(.+)/,
+];
     
-    const letterOptionPatterns = [
-        /^\s*([A-Z])\s*-\s*(.+)/i,                  // يدعم "A -"
-        /^\s*[\(\[\{]([A-Z])[\)\]\}]\s*(.+)/i,     // يدعم "(A)" أو "[B]" أو "{C}"
-        /^\s*([A-Z])[\.\)]\s*(.+)/i,                // النمط الأساسي "A." أو "B)"
-    ];
-    const numberOptionPatterns = [
-        /^\s*(\d+)\s*-\s*(.+)/,
-        /^\s*[\(\[\{](\d+)[\)\]\}]\s*(.+)/,
-        /^\s*(\d+)[\.\)]\s*(.+)/,
-    ];
-    const romanOptionPatterns = [
-        /^\s*([IVXLCDM]+)[\.\)]\s*(.+)/i,           // يدعم الترقيم الروماني "I."
-    ];
+    // النسخة النهائية والمُدمجة
+const romanOptionPatterns = [
+    // تم تحسينه ليدعم "I." أو "I)" وأيضًا "I-"
+    /^\s*([IVXLCDM]+)[\.\)\-]\s*(.+)/i,
+];
     // دمج كل أنماط الخيارات معًا
     const optionPatterns = [...letterOptionPatterns, ...numberOptionPatterns, ...romanOptionPatterns];
 
-    const answerPatterns = [/^(Answer|Correct Answer|Solution|Ans|Sol)\s*[:\-]?\s*/i];
+    // الكود الجديد بعد إضافة كل الرموز
+const answerPatterns = [/^(Answer|Correct Answer|Solution|Ans|Sol)\s*[:\-\.,;\/]?\s*/i];
 
     function findMatch(line, patterns) { for (const pattern of patterns) { const match = line.match(pattern); if (match) return match; } return null; }
 
