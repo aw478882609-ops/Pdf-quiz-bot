@@ -176,7 +176,7 @@ module.exports = async (req, res) => {
 };
 
 function extractQuestions(text) {
-    // الخطوة 1: توحيد وتنظيف النص (بدون تغيير)
+    // الخطوة 1: توحيد وتنظيف النص
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\f/g, '\n').replace(/\u2028|\u2029/g, '\n');
     text = text.replace(/\n{2,}/g, '\n');
 
@@ -184,9 +184,8 @@ function extractQuestions(text) {
     const questions = [];
     let i = 0;
 
-    // تعريف الأنماط والدوال المساعدة (بدون تغيير)
-    const questionPatterns = [/^(Q|Question|Problem|Quiz|السؤال)?\s*\d+[\s\.\)\]]/i];
-    const letterOptionPatterns = [ /^\s*([A-Z])\s*-\s*(.+)/i, /^\s*[\(\[\{]([A-Z])[\)\]\}]\s*(.+)/i, /^\s*([A-Z])[\.\)]\s*(.+)/i ];
+    // تعريف الأنماط والدوال المساعدة
+    const letterOptionPatterns = [ /^\s*([a-zA-Z])\s*-\s*(.+)/, /^\s*[\(\[\{]([a-zA-Z])[\)\]\}]\s*(.+)/, /^\s*([a-zA-Z])[\.\)]\s*(.+)/ ];
     const numberOptionPatterns = [ /^\s*(\d+)\s*-\s*(.+)/, /^\s*[\(\[\{](\d+)[\)\]\}]\s*(.+)/, /^\s*(\d+)[\.\)]\s*(.+)/ ];
     const romanOptionPatterns = [ /^\s*([IVXLCDM]+)[\.\)]\s*(.+)/i ];
     const optionPatterns = [...letterOptionPatterns, ...numberOptionPatterns, ...romanOptionPatterns];
@@ -208,32 +207,32 @@ function extractQuestions(text) {
         return true;
     }
 
-    // ==================== بداية الجزء المعدل ====================
-
+    // [المنطق النهائي المدمج]
     while (i < lines.length) {
         const startLine = lines[i];
-        // تجاهل الأسطر التي لا يمكن أن تكون بداية سؤال
-        if (!startLine || findMatch(startLine, optionPatterns) || findMatch(startLine, answerPatterns)) {
+
+        // ## التحسين الجديد: شرط إضافي لتجاهل العناوين ##
+        // يعتبر السطر عنوانًا إذا كان بأحرف كبيرة ويحتوي على مسافات فقط
+        const isTitle = /^[A-Z\s\(\)]+$/.test(startLine) && startLine.length > 5;
+
+        if (!startLine || findMatch(startLine, optionPatterns) || findMatch(startLine, answerPatterns) || isTitle) {
             i++;
             continue;
         }
 
-        // 1. ابحث عن *أول* ظهور لسطر يبدو كخيار
         let potentialOptionsStartIndex = -1;
         for (let j = i + 1; j < lines.length; j++) {
             if (findMatch(lines[j], optionPatterns)) {
                 potentialOptionsStartIndex = j;
-                break; // وجدنا بداية محتملة، توقف عن البحث
+                break;
             }
         }
 
-        // إذا لم نجد أي خيارات تالية على الإطلاق، تجاهل السطر الحالي وانتقل للتالي
         if (potentialOptionsStartIndex === -1) {
             i++;
             continue;
         }
 
-        // 2. اجمع كل الخيارات المتتالية من هذه النقطة للتحقق منها
         const potentialOptionLines = [];
         let k = potentialOptionsStartIndex;
         while (k < lines.length && findMatch(lines[k], optionPatterns)) {
@@ -241,38 +240,32 @@ function extractQuestions(text) {
             k++;
         }
 
-        // 3. [هذا هو التغيير المطلوب] تحقق من دقة وتسلسل الخيارات
         if (!validateOptionsSequence(potentialOptionLines)) {
-            // إذا كانت الخيارات غير دقيقة، تجاهل السطر الحالي 'i' كبداية محتملة
-            // وابدأ البحث من جديد من السطر التالي مباشرة 'i + 1'
             i++;
             continue;
         }
         
-        // 4. إذا كانت الخيارات دقيقة، أكمل عملية الاستخراج كالمعتاد
         const optionsStartIndex = potentialOptionsStartIndex;
         const questionText = lines.slice(i, optionsStartIndex).join(' ').trim();
         const currentQuestion = { question: questionText, options: [], correctAnswerIndex: undefined };
-        const optionLines = potentialOptionLines; // استخدم الخيارات التي تم التحقق منها بالفعل
+        const optionLines = potentialOptionLines;
         
-        k = optionsStartIndex + optionLines.length; // حدّث المؤشر إلى ما بعد الخيارات
+        k = optionsStartIndex + optionLines.length;
 
-        // أضف نصوص الخيارات فقط إلى السؤال
         optionLines.forEach(line => {
             const match = findMatch(line, optionPatterns);
             currentQuestion.options.push(match[2].trim());
         });
         
-        // البحث عن الإجابة وتحديدها
         if (k < lines.length && findMatch(lines[k], answerPatterns)) {
             const answerLine = lines[k];
             let answerText = answerLine.replace(answerPatterns[0], '').trim();
             let correctIndex = -1;
-            const cleanAnswerText = answerText.replace(/^[A-Z\dIVXLCDM]+[\.\)]\s*/i, '').trim();
+            const cleanAnswerText = answerText.replace(/^[a-zA-Z\dIVXLCDM]+[\.\)]\s*/, '').trim();
             correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === cleanAnswerText.toLowerCase());
 
             if (correctIndex === -1) {
-                const identifierMatch = answerText.match(/^[A-Z\dIVXLCDM]+/i);
+                const identifierMatch = answerText.match(/^[a-zA-Z\dIVXLCDM]+/);
                 if (identifierMatch) {
                     const firstOptionLine = optionLines[0];
                     if (findMatch(firstOptionLine, numberOptionPatterns)) { correctIndex = parseInt(identifierMatch[0], 10) - 1; }
@@ -288,13 +281,10 @@ function extractQuestions(text) {
             i = k;
         }
 
-        // 5. أضف السؤال إذا كان مكتملاً
         if (currentQuestion.options.length > 1 && currentQuestion.correctAnswerIndex !== undefined) {
             questions.push(currentQuestion);
         }
     }
     
-    // ===================== نهاية الجزء المعدل =====================
-
     return questions;
 }
