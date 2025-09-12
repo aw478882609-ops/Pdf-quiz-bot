@@ -22,28 +22,55 @@ module.exports = async (req, res) => {
         const update = body;
 
         // 🗳️ التعامل مع الاختبارات (Quizzes) فقط
+// 🗳️ التعامل مع الاختبارات (Quizzes) بمنطق محدّث
 if (update.message && update.message.poll) {
     const message = update.message;
     const poll = message.poll;
 
-    // الخطوة 1: التحقق من أن النوع هو "quiz" حصراً
-    if (poll.type === 'quiz') {
-        const chatId = message.chat.id;
+    // نتجاهل الاستطلاعات العادية ونركز على الاختبارات فقط
+    if (poll.type !== 'quiz') {
+        return res.status(200).send('OK');
+    }
 
-        // الخطوة 2: تجميع بيانات الاختبار (الإجابة تأتي مباشرة من تيليجرام)
-        const quizData = {
-            question: poll.question,
-            options: poll.options.map(opt => opt.text),
-            correctOptionId: poll.correct_option_id,
-            explanation: poll.explanation || null
+    const chatId = message.chat.id;
+    const userId = message.from.id;
+    const quizData = {
+        question: poll.question,
+        options: poll.options.map(opt => opt.text),
+        correctOptionId: poll.correct_option_id,
+        explanation: poll.explanation || null
+    };
+
+    // --- المنطق الجديد ---
+    // إذا كانت الرسالة معاد توجيهها، اسأل المستخدم عن الإجابة دائمًا
+    if (message.forward_date) {
+        userState[userId] = {
+            awaiting: 'poll_manual_answer',
+            poll_data: quizData
         };
 
-        // الخطوة 3: استخدام الدالة المساعدة لتنسيق النص وإرساله فورًا
-        const formattedText = formatQuizText(quizData);
-        await bot.sendMessage(chatId, formattedText, { parse_mode: 'Markdown' });
+        const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+        const keyboardButtons = quizData.options.map((option, index) => ({
+            text: optionLetters[index] || (index + 1),
+            callback_data: `poll_answer_${index}`
+        }));
+        
+        await bot.sendMessage(chatId, `*تم استلام اختبار معاد توجيهه:*\n"${quizData.question}"\n\nيرجى تحديد الإجابة الصحيحة يدويًا:`, {
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: [keyboardButtons] }
+        });
     }
-    
-    // إذا كان استطلاعًا عاديًا، سيتجاهله البوت ولن يفعل شيئًا
+    // إذا كانت الرسالة مباشرة، قم بالتحويل التلقائي
+    else {
+        if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
+            const formattedText = formatQuizText(quizData);
+            await bot.sendMessage(chatId, formattedText);
+        } else {
+            // في حالة نادرة جدًا أن اختبار مباشر لا يحتوي على إجابة
+            await bot.sendMessage(chatId, "⚠️ هذا الاختبار لا يحتوي على إجابة صحيحة، لا يمكن تحويله تلقائيًا.");
+        }
+    }
+
     return res.status(200).send('OK');
 }
         // 1️⃣ التعامل مع الملفات المرسلة
@@ -398,33 +425,27 @@ const isQuestionStart = findMatch(line, questionPatterns) || (optionInFollowingL
     return questions;
 }
 
-// ... بعد نهاية دالة extractQuestions
-// النسخة الجديدة لتتوافق مع التنسيق المطلوب
 function formatQuizText(quizData) {
-    // إضافة السؤال مع البادئة Q:
-    let formattedText = `Q: ${quizData.question}\n`;
+    // السؤال مع سطر فارغ بعده
+    let formattedText = `Q: ${quizData.question}\n\n`;
     const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
 
-    // إضافة الخيارات بالتنسيق الجديد (مثال: A) Text)
-    quizData.options.forEach((optionText, optIndex) => {
-        formattedText += `${optionLetters[optIndex]}) ${optionText}\n`;
+    // الخيارات مع سطر فارغ بين كل خيار
+    const formattedOptions = quizData.options.map((optionText, optIndex) => {
+        return `${optionLetters[optIndex]}) ${optionText}`;
     });
+    formattedText += formattedOptions.join('\n\n');
 
-    // إضافة الإجابة بالتنسيق الجديد في سطر منفصل
+    // الإجابة مع سطرين فارغين قبلها
     if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
         const correctLetter = optionLetters[quizData.correctOptionId];
         const correctText = quizData.options[quizData.correctOptionId];
-        formattedText += `Answer: ${correctLetter}) ${correctText}`;
+        formattedText += `\n\nAnswer: ${correctLetter}) ${correctText}`;
     }
 
-    // إضافة التوضيح إن وجد (مع تنسيق مناسب)
     if (quizData.explanation) {
-        if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
-             formattedText += `\n`; // لإضافة سطر جديد قبل التوضيح
-        }
-        formattedText += `Explanation: ${quizData.explanation}`;
+        formattedText += `\nExplanation: ${quizData.explanation}`;
     }
-    
     return formattedText;
 }
 
