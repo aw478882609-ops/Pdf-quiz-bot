@@ -432,7 +432,7 @@ const isQuestionStart = findMatch(line, questionPatterns) || (optionInFollowingL
 }
 function formatQuizText(quizData) {
     // السؤال مع سطر فارغ بعده
-    let formattedText = `Q: ${quizData.question}\n\n`;
+    let formattedText = ` ${quizData.question}\n\n`;
     const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
 
     // الخيارات بدون سطر فارغ بينها
