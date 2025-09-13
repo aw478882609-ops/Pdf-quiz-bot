@@ -29,7 +29,12 @@ module.exports = async (req, res) => {
             const userId = message.from.id;
             const fileId = message.document.file_id;
 
-            
+            // التحقق من حجم الملف
+            const VERCEL_LIMIT_BYTES = 10 * 1024 * 1024;
+            if (message.document.file_size > VERCEL_LIMIT_BYTES) {
+                await bot.sendMessage(chatId, `⚠️ عذرًا، حجم الملف يتجاوز الحد المسموح به (${'10 MB'}).`);
+                return res.status(200).send('OK');
+            }
 
             if (message.document.mime_type !== 'application/pdf') {
                 await bot.sendMessage(chatId, '⚠️ يرجى إرسال ملف بصيغة PDF فقط.');
@@ -441,5 +446,4 @@ function formatQuizText(quizData) {
     }
     return formattedText;
 }
-
 
