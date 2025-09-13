@@ -191,6 +191,7 @@ module.exports = async (req, res) => {
         await bot.sendDocument(chatId, fileId, {
             caption: 'مرحباً بك! 👋\n\nإليك دليل المستخدم الشامل للبوت بصيغة PDF. 📖'
         });
+            }
                 
              if (userState[userId] && userState[userId].awaiting === 'channel_id') {
                 const targetChatId = text.trim();
