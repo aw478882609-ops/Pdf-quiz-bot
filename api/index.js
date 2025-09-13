@@ -20,17 +20,12 @@ module.exports = async (req, res) => {
         }
         const body = await micro.json(req);
         const update = body;
-
-        // 🗳️ التعامل مع الاختبارات (Quizzes) فقط
-// 🗳️ التعامل مع الاختبارات (Quizzes) بمنطق محدّث
+// 🗳️ التعامل مع الاختبارات (Quizzes) بمنطق يدعم تعدد الجلسات
 if (update.message && update.message.poll) {
     const message = update.message;
     const poll = message.poll;
 
-    // نتجاهل الاستطلاعات العادية ونركز على الاختبارات فقط
-    if (poll.type !== 'quiz') {
-        return res.status(200).send('OK');
-    }
+    if (poll.type !== 'quiz') { return res.status(200).send('OK'); }
 
     const chatId = message.chat.id;
     const userId = message.from.id;
@@ -41,38 +36,41 @@ if (update.message && update.message.poll) {
         explanation: poll.explanation || null
     };
 
-    // --- المنطق الجديد ---
-    // إذا كانت الرسالة معاد توجيهها، اسأل المستخدم عن الإجابة دائمًا
-    if (message.forward_date) {
-        userState[userId] = {
-            awaiting: 'poll_manual_answer',
-            poll_data: quizData
-        };
+    // إذا كانت الإجابة معروفة، قم بالتحويل التلقائي
+    if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
+        const formattedText = formatQuizText(quizData);
+        await bot.sendMessage(chatId, formattedText);
+    } 
+    // إذا كانت الإجابة غير معروفة (معاد توجيهه)، ابدأ جلسة تفاعلية
+    else {
+        // نهيئة حاوية الجلسات إذا لم تكن موجودة
+        if (!userState[userId] || !userState[userId].pending_polls) {
+            userState[userId] = { pending_polls: {} };
+        }
+
+        // إنشاء نص الرسالة التفاعلية (معاينة للسؤال)
+        const previewText = formatQuizText({ ...quizData, correctOptionId: null });
+        const promptText = `${previewText}\n\n*يرجى تحديد الإجابة الصحيحة لهذا الاختبار:*`;
 
         const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
         const keyboardButtons = quizData.options.map((option, index) => ({
             text: optionLetters[index] || (index + 1),
             callback_data: `poll_answer_${index}`
         }));
-        
-        await bot.sendMessage(chatId, `*تم استلام اختبار معاد توجيهه:*\n"${quizData.question}"\n\nيرجى تحديد الإجابة الصحيحة يدويًا:`, {
+
+        // إرسال الرسالة التفاعلية كـ "رد" على السؤال الأصلي
+        const interactiveMessage = await bot.sendMessage(chatId, promptText, {
             parse_mode: 'Markdown',
+            reply_to_message_id: message.message_id,
             reply_markup: { inline_keyboard: [keyboardButtons] }
         });
-    }
-    // إذا كانت الرسالة مباشرة، قم بالتحويل التلقائي
-    else {
-        if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
-            const formattedText = formatQuizText(quizData);
-            await bot.sendMessage(chatId, formattedText);
-        } else {
-            // في حالة نادرة جدًا أن اختبار مباشر لا يحتوي على إجابة
-            await bot.sendMessage(chatId, "⚠️ هذا الاختبار لا يحتوي على إجابة صحيحة، لا يمكن تحويله تلقائيًا.");
-        }
-    }
 
+        // **الخطوة الأهم:** نحفظ بيانات السؤال باستخدام ID الرسالة التفاعلية كمفتاح فريد
+        userState[userId].pending_polls[interactiveMessage.message_id] = quizData;
+    }
     return res.status(200).send('OK');
 }
+
         // 1️⃣ التعامل مع الملفات المرسلة
         if (update.message && update.message.document) {
             const message = update.message;
@@ -130,30 +128,31 @@ else if (update.callback_query) {
     const gasWebAppUrl = process.env.GAS_WEB_APP_URL;
 
     // --- المنطق الجديد: التحقق من أزرار الاختبارات أولاً ---
-    if (data.startsWith('poll_answer_')) {
-        if (!userState[userId] || userState[userId].awaiting !== 'poll_manual_answer') {
-            await bot.answerCallbackQuery(callbackQuery.id, { text: 'هذه الجلسة انتهت.', show_alert: true });
-            await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
-            return res.status(200).send('OK');
-        }
+    // 🔘 التعامل مع أزرار تحديد إجابة الاختبار اليدوية (يدعم تعدد الجلسات)
+else if (data.startsWith('poll_answer_')) {
+    const messageId = callbackQuery.message.message_id; // ID الرسالة التي تحتوي على الزر
 
-        const { poll_data } = userState[userId];
-        if (data !== 'poll_answer_none') {
-             poll_data.correctOptionId = parseInt(data.split('_')[2], 10);
-        } else {
-            poll_data.correctOptionId = null;
-        }
-
-        const formattedText = formatQuizText(poll_data);
-
-        await bot.editMessageText(formattedText, {
-            chat_id: chatId,
-            message_id: messageId
-        });
-
-        delete userState[userId];
-        await bot.answerCallbackQuery(callbackQuery.id);
+    // التحقق من وجود جلسة مرتبطة بـ ID هذه الرسالة تحديدًا
+    if (!userState[userId] || !userState[userId].pending_polls || !userState[userId].pending_polls[messageId]) {
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'هذه الجلسة انتهت أو تمت معالجتها.', show_alert: true });
+        await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
+        return res.status(200).send('OK');
     }
+
+    // استخراج بيانات السؤال الصحيح من الجلسة
+    const poll_data = userState[userId].pending_polls[messageId];
+    poll_data.correctOptionId = parseInt(data.split('_')[2], 10);
+    const formattedText = formatQuizText(poll_data);
+
+    await bot.editMessageText(formattedText, {
+        chat_id: chatId,
+        message_id: messageId,
+    });
+
+    // **الأهم:** نحذف فقط جلسة هذا السؤال من قائمة الانتظار
+    delete userState[userId].pending_polls[messageId];
+    await bot.answerCallbackQuery(callbackQuery.id);
+}
     // --- ثانياً: التعامل مع الأزرار القديمة الخاصة بملفات PDF ---
     else {
         // الآن نضع التحقق القديم هنا، حيث ينتمي
@@ -447,19 +446,18 @@ const isQuestionStart = findMatch(line, questionPatterns) || (optionInFollowingL
     }
     return questions;
 }
-
 function formatQuizText(quizData) {
     // السؤال مع سطر فارغ بعده
     let formattedText = `Q: ${quizData.question}\n\n`;
     const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
 
-    // الخيارات مع سطر فارغ بين كل خيار
+    // الخيارات بدون سطر فارغ بينها
     const formattedOptions = quizData.options.map((optionText, optIndex) => {
         return `${optionLetters[optIndex]}) ${optionText}`;
     });
-    formattedText += formattedOptions.join('\n\n');
+    formattedText += formattedOptions.join('\n'); // **التعديل هنا**
 
-    // الإجابة مع سطرين فارغين قبلها
+    // الإجابة مع سطر فارغ قبلها
     if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
         const correctLetter = optionLetters[quizData.correctOptionId];
         const correctText = quizData.options[quizData.correctOptionId];
@@ -471,4 +469,5 @@ function formatQuizText(quizData) {
     }
     return formattedText;
 }
+
 
