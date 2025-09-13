@@ -63,11 +63,11 @@ module.exports = async (req, res) => {
                         reply_markup: keyboard
                     });
                 } else {
-                    await bot.sendMessage(chatId, '❌ لم أتمكن من العثور على أي أسئلة بصيغة صحيحة في الملف.');
+                    await bot.sendMessage(chatId, '❌ لم أتمكن من العثور على أي أسئلة بصيغة صحيحة في الملف. للمساعدة اضغط /help');
                 }
             } catch (error) {
                 console.error("Error processing PDF:", error);
-                await bot.sendMessage(chatId, '⚠️ حدث خطأ أثناء معالجة الملف. يرجى التأكد من أن الملف سليم وغير تالف.');
+                await bot.sendMessage(chatId, '⚠️ حدث خطأ أثناء معالجة الملف. يرجى التأكد من أن الملف سليم وغير تالف. للمساعدة اضغط /help');
             }
         }
 
@@ -186,6 +186,12 @@ module.exports = async (req, res) => {
             const chatId = message.chat.id;
             const text = message.text;
 
+          if (text.toLowerCase() === '/help') {
+        const fileId = 'BQACAgQAAxkBAAE7DM9oxZQn-EJAoy7UqZ_MtyYeXL2gmQAC9xwAAirhMFLn6da8JRQcXDYE'; // استبدل هذا بـ file_id لملف PDF الخاص بك
+        await bot.sendDocument(chatId, fileId, {
+            caption: 'مرحباً بك! 👋\n\nإليك دليل المستخدم الشامل للبوت بصيغة PDF. 📖'
+        });
+                
              if (userState[userId] && userState[userId].awaiting === 'channel_id') {
                 const targetChatId = text.trim();
                 try {
