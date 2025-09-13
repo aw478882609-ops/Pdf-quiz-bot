@@ -187,7 +187,7 @@ module.exports = async (req, res) => {
             const text = message.text;
 
           if (text.toLowerCase() === '/help') {
-        const fileId = 'BQACAgQAAxkBAAE7DM9oxZQn-EJAoy7UqZ_MtyYeXL2gmQAC9xwAAirhMFLn6da8JRQcXDYE'; // استبدل هذا بـ file_id لملف PDF الخاص بك
+        const fileId = 'BQACAgQAAxkBAAE7DSpoxZngmTGzsB_8dwKoygzU0Kag6wAC4hgAAoEOKVIe8Plc9LwL8TYE'; // استبدل هذا بـ file_id لملف PDF الخاص بك
         await bot.sendDocument(chatId, fileId, {
             caption: 'مرحباً بك! 👋\n\nإليك دليل المستخدم الشامل للبوت بصيغة PDF. 📖'
         });
