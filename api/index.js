@@ -239,16 +239,14 @@ module.exports = async (req, res) => {
 };
 
 function extractQuestions(text) {
-    // الخطوة 1: تنظيف النص الأولي
+    // 1. تنظيف النص الأولي
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     const lines = text.split('\n').map(l => l.trim());
     const questions = [];
-    let i = 0;
 
-    // الخطوة 2: تعريف الأنماط (Regex) المحسّنة
+    // 2. تعريف الأنماط (Regex) المحسّنة
     const questionStartPattern = /^\d+[\.\)]/;
-    const fullQuestionPattern = /^(?:Q|Question|Problem|Quiz|السؤال)?\s*(\d+[\s\.\)\]])(.*)/i;
-
+    
     // نمط خيارات مرن يدعم الحروف الإنجليزية، الهندية، والأرقام (بما في ذلك الأخطاء المطبعية مثل 'ि')
     const optionLetter = 'A-Z|क-ह|ि';
     const optionPatterns = [
@@ -260,85 +258,94 @@ function extractQuestions(text) {
         /^\s*[\(\[\{](\d+)[\)\]\}]\s*(.+)/,   // (1) ...
     ];
 
-    // نمط إجابة يدعم اللغة الهندية "उत्तरः"
     const answerPattern = /^\s*[\-\*]?\s*(?:Answer|Correct Answer|Solution|Ans|Sol|उत्तर(?:ः)?)\s*[:\-\.,;\/]?\s*(.+)/i;
 
     // خريطة لربط الحروف الهندية الصحيحة والخاطئة بالإجابة الصحيحة
-    const devanagariMap = { 'क': 0, 'ख': 1, 'ग': 2, 'घ': 3, 'ङ': 4, 'ि': 0 }; // تم اعتبار 'ि' كخطأ مطبعي لـ 'क'
+    const devanagariMap = { 'क': 0, 'ख': 1, 'ग': 2, 'घ': 3, 'ङ': 4, 'ि': 0 }; // اعتبار 'ि' كخطأ مطبعي لـ 'क'
 
     const isOption = (line) => optionPatterns.some(p => p.test(line));
     const isAnswer = (line) => answerPattern.test(line);
 
-    // الخطوة 3: الحلقة الرئيسية لتحليل النص سطراً بسطر
+    const getNextNonEmptyLine = (startIndex) => {
+        for (let j = startIndex; j < lines.length; j++) {
+            if (lines[j]) return lines[j];
+        }
+        return null;
+    };
+
+    const looksLikeQuestion = (line, nextLine) => {
+        if (!line) return false;
+        if (questionStartPattern.test(line)) return true;
+        if (!isOption(line) && !isAnswer(line) && nextLine && isOption(nextLine)) {
+            return true;
+        }
+        return false;
+    };
+    
+    const getOptionMatch = (line) => {
+        for (const pattern of optionPatterns) {
+            const match = line.match(pattern);
+            if (match) return match;
+        }
+        return null;
+    };
+
+
+    // 3. الحلقة الرئيسية لتحليل النص
+    let i = 0;
     while (i < lines.length) {
-        let line = lines[i];
-        if (!line) {
+        const currentLine = lines[i];
+        const nextNonEmpty = getNextNonEmptyLine(i + 1);
+
+        if (!looksLikeQuestion(currentLine, nextNonEmpty)) {
             i++;
             continue;
         }
 
-        // --- البحث عن بداية السؤال ---
-        let questionText = '';
-        let questionNumber = '';
-        let isQuestionFound = false;
-
-        let match = line.match(fullQuestionPattern);
-        if (match) { // الحالة 1: الرقم والنص في نفس السطر
-            questionNumber = match[1].trim();
-            questionText = match[2].trim();
-            isQuestionFound = true;
-        } else if (questionStartPattern.test(line) && line.replace(questionStartPattern, '').trim().length < 5) { // الحالة 2: الرقم في سطر والنص في السطر التالي
-            questionNumber = line.trim();
-            questionText = '';
-            isQuestionFound = true;
-        } else if (!isOption(line) && !isAnswer(line) && lines.slice(i + 1, i + 5).some(isOption)) { // الحالة 3: لا يوجد رقم سؤال (خطأ OCR)
-             questionNumber = `Q${questions.length + 1}`;
-             questionText = line;
-             isQuestionFound = true;
-        }
-
-        if (!isQuestionFound) {
-            i++;
-            continue;
-        }
-        
-        // --- تجميع نص السؤال بالكامل (إذا كان متعدد الأسطر) ---
-        i++;
-        while (i < lines.length && lines[i] && !isOption(lines[i]) && !isAnswer(lines[i])) {
-            questionText += ' ' + lines[i].trim();
-            i++;
-        }
-        
-        // --- تجميع الخيارات (مع دعم تعدد الأسطر للخيار الواحد) ---
-        let options = [];
-        while (i < lines.length && lines[i] && isOption(lines[i])) {
-            let currentOptLine = lines[i];
-            let optMatch = null;
-            for(const p of optionPatterns) {
-                optMatch = currentOptLine.match(p);
-                if (optMatch) break;
-            }
-
-            let optionText = optMatch[2].trim();
-            
-            // البحث عن أسطر تكميلية للخيار الحالي
-            let nextIndex = i + 1;
-            while(nextIndex < lines.length && lines[nextIndex] && !isOption(lines[nextIndex]) && !isAnswer(lines[nextIndex]) && !questionStartPattern.test(lines[nextIndex])) {
-                optionText += ' ' + lines[nextIndex].trim();
-                nextIndex++;
-            }
-            options.push(optionText);
-            i = nextIndex;
-        }
-
-        // --- البحث عن الإجابة ---
+        // --- تم العثور على بداية سؤال ---
+        let questionText = currentLine;
+        const options = [];
         let correctAnswerIndex = undefined;
-        if (i < lines.length && lines[i] && isAnswer(lines[i])) {
-            let answerMatch = lines[i].match(answerPattern);
-            if (answerMatch) {
-                // تنظيف معرف الإجابة من الأقواس والنقاط
-                let answerIdentifier = answerMatch[1].trim().replace(/[()\[\]{}\.\)]/g, ''); 
+        let k = i + 1;
 
+        // --- تجميع باقي نص السؤال (إذا كان متعدد الأسطر) ---
+        while (k < lines.length && lines[k] && !isOption(lines[k])) {
+            questionText += ' ' + lines[k].trim();
+            k++;
+        }
+
+        // --- تجميع الخيارات (مع معالجة الأسطر الفارغة بينها) ---
+        while (k < lines.length) {
+            const line = lines[k];
+            if (!line) { // تجاهل الأسطر الفارغة
+                k++;
+                continue;
+            }
+
+            if (isAnswer(line) || looksLikeQuestion(line, getNextNonEmptyLine(k + 1))) {
+                break; // توقف عند العثور على إجابة أو سؤال جديد
+            }
+
+            const optMatch = getOptionMatch(line);
+            if (optMatch) {
+                let optionText = optMatch[2].trim();
+                let continuationIndex = k + 1;
+                while (continuationIndex < lines.length && lines[continuationIndex] && !isOption(lines[continuationIndex]) && !isAnswer(lines[continuationIndex]) && !questionStartPattern.test(lines[continuationIndex])) {
+                    optionText += ' ' + lines[continuationIndex].trim();
+                    continuationIndex++;
+                }
+                options.push(optionText);
+                k = continuationIndex;
+            } else {
+                break; // توقف إذا كان السطر ليس خيارًا
+            }
+        }
+        
+        // --- البحث عن الإجابة ---
+        if (k < lines.length && lines[k] && isAnswer(lines[k])) {
+            const answerMatch = lines[k].match(answerPattern);
+            if (answerMatch) {
+                let answerIdentifier = answerMatch[1].trim().replace(/[()\[\]{}\.\)]/g, '');
                 if (devanagariMap.hasOwnProperty(answerIdentifier)) {
                     correctAnswerIndex = devanagariMap[answerIdentifier];
                 } else if (/^[A-Z]$/i.test(answerIdentifier)) {
@@ -347,19 +354,21 @@ function extractQuestions(text) {
                     correctAnswerIndex = parseInt(answerIdentifier, 10) - 1;
                 }
             }
-            i++;
+            k++; // الانتقال إلى السطر التالي بعد الإجابة
         }
 
         // --- إضافة السؤال المكتمل إلى القائمة ---
-        if (questionText && options.length >= 2 && correctAnswerIndex !== undefined && correctAnswerIndex < options.length) {
+        if (questionText.trim() && options.length >= 2 && correctAnswerIndex !== undefined && correctAnswerIndex >= 0 && correctAnswerIndex < options.length) {
             questions.push({
-                question: `${questionNumber} ${questionText}`.trim(),
+                question: questionText.trim().replace(questionStartPattern, '').trim(),
                 options: options,
                 correctAnswerIndex: correctAnswerIndex
             });
         }
+        
+        i = k; // تحديث المؤشر الرئيسي
     }
-
+    
     return questions;
 }
 
