@@ -237,24 +237,21 @@ module.exports = async (req, res) => {
 // ==== بداية دالة استخراج الأسئلة النهائية (النسخة الأكثر قوة واستقرارًا) ====
 // ===============================================================================================
 function extractQuestions(text) {
-    // 1. تنظيف النص الأولي وإزالة علامات الاقتباس الناتجة عن التجزئة
+    // 1. التنظيف الأولي للسطور وإزالة أي علامات اقتباس زائدة
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     const lines = text.split('\n').map(l => l.trim().replace(/^"|"$/g, ''));
-    const questions = [];
 
-    // 2. تعريف كل الأنماط المدعومة (مع إعادة الأنماط المحذوفة)
+    // 2. تعريف جميع الأنماط المدعومة بشكل كامل
     const letterOptionPatterns = [ /^\s*[\-\*]?\s*([A-Z])[\.\)\-]\s*(.+)/i, /^\s*([A-Z])\s*-\s*(.+)/i, /^\s*[\(\[\{]([A-Z])[\)\]\}]\s*(.+)/i ];
     const numberOptionPatterns = [ /^\s*[\-\*]?\s*(\d+)[\.\)\-]\s*(.+)/, /^\s*(\d+)\s*-\s*(.+)/, /^\s*[\(\[\{](\d+)[\)\]\}]\s*(.+)/ ];
     const romanOptionPatterns = [ /^\s*([IVXLCDM]+)[\.\)\-]\s*(.+)/i ];
     const devanagariOptionPatterns = [ /^\s*[\(\[\{]([क-ह]|ि)[\)\]\}]\s*(.+)/, /^\s*([क-ह]|ि)[\.\)]\s*(.+)/ ];
     
-    // دمج كل أنماط الخيارات معًا
     const optionPatterns = [...letterOptionPatterns, ...numberOptionPatterns, ...romanOptionPatterns, ...devanagariOptionPatterns];
     
-    // نمط شامل للإجابات باللغتين
-    const answerPattern = /^\s*[\-\*]?\s*(?:Answer|Correct Answer|Solution|Ans|Sol|सही उत्तर|उत्तर)(?:ः)?\s*[:\-\.,;\/]?\s*(.+)/i;
+    const answerPattern = /^\s*[\-\*]?\s*(?:सही उत्तर|उत्तर|Answer|Correct Answer|Solution|Ans|Sol)(?:ः|:)?\s*[:\-\.,;\/]?\s*(.+)/i;
     
-    // خرائط وقيم مساعدة
+    // 3. تعريف الدوال المساعدة
     const devanagariMap = { 'क': 0, 'ख': 1, 'ग': 2, 'घ': 3, 'ङ': 4, 'ि': 0 };
     function romanToNumber(roman) {
         const R_MAP = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
@@ -268,7 +265,6 @@ function extractQuestions(text) {
         return num;
     }
 
-    // دوال مساعدة للتحقق
     const isOption = (line) => line && optionPatterns.some(p => p.test(line));
     const isAnswer = (line) => line && answerPattern.test(line);
     const getOptionParts = (line) => {
@@ -279,111 +275,96 @@ function extractQuestions(text) {
         return null;
     };
 
-    // منطق محسن للتعرف على بداية السؤال
-    const isQuestionStart = (index) => {
-        const line = lines[index];
-        if (!line || isAnswer(line)) return false;
-        
-        // الحالة 1: يبدأ برقم ولكنه ليس خيارًا مرقمًا
-        if (/^\d+/.test(line) && !numberOptionPatterns.some(p => p.test(line))) {
-            return true;
+    const questions = [];
+    
+    // 4. منطق التحليل الجديد القائم على "نقاط الارتكاز"
+    // الخطوة أ: العثور على جميع أسطر الإجابات أولاً
+    const answerIndices = [];
+    lines.forEach((line, index) => {
+        if (isAnswer(line)) {
+            answerIndices.push(index);
         }
+    });
+
+    let startOfBlockIndex = 0;
+    // الخطوة ب: معالجة كل "كتلة" بين إجابة والتي تليها
+    for (const answerIndex of answerIndices) {
+        // تحديد كتلة النص (من بعد الإجابة السابقة وحتى قبل الإجابة الحالية)
+        const blockLines = lines.slice(startOfBlockIndex, answerIndex);
         
-        // الحالة 2: لا يبدأ برقم، ليس خيارًا، ولكن يليه خيار (للأسئلة غير المرقمة)
-        if (!/^\d+/.test(line) && !isOption(line)) {
-            let nextLineIndex = index + 1;
-            while (nextLineIndex < lines.length && !lines[nextLineIndex]) { nextLineIndex++; }
-            if (nextLineIndex < lines.length && isOption(lines[nextLineIndex])) {
-                return true;
+        // البحث عن أول خيار في الكتلة لتحديد بداية الخيارات
+        let firstOptionIndexInBlock = -1;
+        for (let i = 0; i < blockLines.length; i++) {
+            if (isOption(blockLines[i])) {
+                firstOptionIndexInBlock = i;
+                break;
             }
         }
-        return false;
-    };
 
-    // 3. الحلقة الرئيسية لتحليل النص
-    let i = 0;
-    while (i < lines.length) {
-        if (!isQuestionStart(i)) {
-            i++;
-            continue;
+        if (firstOptionIndexInBlock === -1) {
+            startOfBlockIndex = answerIndex + 1;
+            continue; // لا توجد خيارات في هذه الكتلة، تجاهلها وانتقال
         }
-
-        let questionText = lines[i];
+        
+        // كل ما قبل أول خيار هو نص السؤال
+        const questionText = blockLines.slice(0, firstOptionIndexInBlock).join(' ').replace(/\s+/g, ' ').trim();
+        
+        // تجميع الخيارات ومعالجة الأسطر المتعددة
+        const rawOptionLines = blockLines.slice(firstOptionIndexInBlock);
         const options = [];
-        const optionLines = []; 
-        let correctAnswerIndex = undefined;
-        let k = i + 1;
-
-        // تجميع نص السؤال الكامل
-        while (k < lines.length && !isOption(lines[k])) {
-            if (isQuestionStart(k) || isAnswer(lines[k])) break;
-            if (lines[k]) { questionText += ' ' + lines[k]; }
-            k++;
-        }
-
-        // تجميع الخيارات الكاملة
-        while (k < lines.length) {
-            const line = lines[k];
-            if (!line) { k++; continue; }
-            if (isAnswer(line) || isQuestionStart(k)) break;
-            
-            const optParts = getOptionParts(line);
-            if (optParts) {
-                optionLines.push(line);
-                let optionText = optParts[optParts.length - 1].trim(); // آخر مجموعة التقاط هي النص دائمًا
-                let next_k = k + 1;
-                while (next_k < lines.length) {
-                    const nextLine = lines[next_k];
-                    if (!nextLine) { next_k++; continue; }
-                    if (isOption(nextLine) || isAnswer(nextLine) || isQuestionStart(next_k)) break;
-                    optionText += ' ' + nextLine;
-                    next_k++;
-                }
-                options.push(optionText);
-                k = next_k;
-            } else {
-                if (options.length > 0) { // اعتبره سطراً تكميلياً للخيار الأخير
-                    options[options.length - 1] += ' ' + line;
-                    k++;
-                } else {
-                    break;
-                }
-            }
-        }
+        const optionLinesForTypeCheck = [];
+        let currentOptionText = '';
         
-        // تجميع الإجابة
-        if (k < lines.length && isAnswer(lines[k])) {
-            const answerMatch = lines[k].match(answerPattern);
-            if (answerMatch && optionLines.length > 0) {
-                let answerIdentifier = answerMatch[1].trim().replace(/[()\[\]{}\.\)]/g, '');
-                
-                const firstOptionLine = optionLines[0];
-                if (devanagariOptionPatterns.some(p=>p.test(firstOptionLine))) {
-                     if (devanagariMap.hasOwnProperty(answerIdentifier)) {
-                        correctAnswerIndex = devanagariMap[answerIdentifier];
-                    }
-                } else if (romanOptionPatterns.some(p=>p.test(firstOptionLine))) {
-                    correctAnswerIndex = romanToNumber(answerIdentifier) - 1;
-                } else if (letterOptionPatterns.some(p=>p.test(firstOptionLine))) {
-                    correctAnswerIndex = answerIdentifier.toUpperCase().charCodeAt(0) - 'A'.charCodeAt(0);
-                } else if (numberOptionPatterns.some(p=>p.test(firstOptionLine))) {
-                    correctAnswerIndex = parseInt(answerIdentifier, 10) - 1;
+        for (const rawLine of rawOptionLines) {
+            const optParts = getOptionParts(rawLine);
+            if (optParts) { // هذا السطر هو بداية خيار جديد
+                if (currentOptionText) {
+                    options.push(currentOptionText.trim());
                 }
+                optionLinesForTypeCheck.push(rawLine);
+                currentOptionText = optParts[optParts.length - 1]; // النص دائمًا في آخر مجموعة التقاط
+            } else { // هذا السطر هو تكملة للخيار السابق
+                currentOptionText += ' ' + rawLine;
             }
-            k++;
+        }
+        if (currentOptionText) {
+            options.push(currentOptionText.trim());
         }
 
-        // حفظ السؤال
-        if (questionText.trim() && options.length >= 2 && correctAnswerIndex !== undefined && correctAnswerIndex >= 0 && correctAnswerIndex < options.length) {
+        // تحليل الإجابة
+        let correctAnswerIndex = undefined;
+        const answerLine = lines[answerIndex];
+        const answerMatch = answerLine.match(answerPattern);
+
+        if (answerMatch && optionLinesForTypeCheck.length > 0) {
+            let answerIdentifier = answerMatch[1].trim().replace(/[()\[\]{}\.\)]/g, '');
+            const firstOptionLine = optionLinesForTypeCheck[0];
+            
+            if (devanagariOptionPatterns.some(p => p.test(firstOptionLine))) {
+                if (devanagariMap.hasOwnProperty(answerIdentifier)) {
+                    correctAnswerIndex = devanagariMap[answerIdentifier];
+                }
+            } else if (romanOptionPatterns.some(p => p.test(firstOptionLine))) {
+                correctAnswerIndex = romanToNumber(answerIdentifier) - 1;
+            } else if (letterOptionPatterns.some(p => p.test(firstOptionLine))) {
+                correctAnswerIndex = answerIdentifier.toUpperCase().charCodeAt(0) - 'A'.charCodeAt(0);
+            } else if (numberOptionPatterns.some(p => p.test(firstOptionLine))) {
+                correctAnswerIndex = parseInt(answerIdentifier, 10) - 1;
+            }
+        }
+
+        // حفظ السؤال إذا كان مكتملاً
+        if (questionText && options.length > 1 && correctAnswerIndex !== undefined && correctAnswerIndex >= 0 && correctAnswerIndex < options.length) {
             questions.push({
-                question: questionText.trim(),
+                question: questionText,
                 options: options,
                 correctAnswerIndex: correctAnswerIndex
             });
         }
-        i = k;
+        
+        startOfBlockIndex = answerIndex + 1; // تحديث بداية الكتلة التالية
     }
-    
+
     return questions;
 }
 // ===============================================================================================
