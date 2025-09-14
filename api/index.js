@@ -239,50 +239,35 @@ module.exports = async (req, res) => {
 };
 
 function extractQuestions(text) {
-    // 1. تنظيف النص الأولي
+    // 1. تنظيف النص الأولي وإزالة علامات الاقتباس الناتجة عن التجزئة
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    const lines = text.split('\n').map(l => l.trim());
+    const lines = text.split('\n').map(l => l.trim().replace(/^"|"$/g, ''));
     const questions = [];
 
-    // 2. تعريف الأنماط (Regex) المحسّنة
+    // 2. تعريف الأنماط (Regex) الشاملة
     const questionStartPattern = /^\d+[\.\)]/;
     
     // نمط خيارات مرن يدعم الحروف الإنجليزية، الهندية، والأرقام (بما في ذلك الأخطاء المطبعية مثل 'ि')
     const optionLetter = 'A-Z|क-ह|ि';
     const optionPatterns = [
-        new RegExp(`^\\s*[\\-\\*]?\\s*([${optionLetter}])\\s*-\\s*(.+)`, 'i'), // A - ...
-        new RegExp(`^\\s*[\\-\\*]?\\s*([${optionLetter}])[\\.\\)]\\s*(.+)`, 'i'), // A. ... or क)
-        new RegExp(`^\\s*[\\(\\[\\{]([${optionLetter}])[\\)\\]\\}]\\s*(.+)`, 'i'), // (A) ...
-        /^\s*[\-\*]?\s*(\d+)[\.\)\-]\s*(.+)/, // 1. ...
-        /^\s*[\-\*]?\s*(\d+)\s*-\s*(.+)/,      // 1 - ...
-        /^\s*[\(\[\{](\d+)[\)\]\}]\s*(.+)/,   // (1) ...
+        new RegExp(`^\\s*[\\-\\*]?\\s*([${optionLetter}])\\s*-\\s*(.+)`, 'i'),
+        new RegExp(`^\\s*[\\-\\*]?\\s*([${optionLetter}])[\\.\\)]\\s*(.+)`, 'i'),
+        new RegExp(`^\\s*[\\(\\[\\{]([${optionLetter}])[\\)\\]\\}]\\s*(.+)`, 'i'),
+        /^\s*[\-\*]?\s*(\d+)[\.\)\-]\s*(.+)/,
+        /^\s*[\-\*]?\s*(\d+)\s*-\s*(.+)/,
+        /^\s*[\(\[\{](\d+)[\)\]\}]\s*(.+)/,
     ];
 
-    const answerPattern = /^\s*[\-\*]?\s*(?:Answer|Correct Answer|Solution|Ans|Sol|उत्तर(?:ः)?)\s*[:\-\.,;\/]?\s*(.+)/i;
+    // **نمط محدث** ليتعرف على "उत्तर" و "सही उत्तर"
+    const answerPattern = /^\s*[\-\*]?\s*(?:सही उत्तर|उत्तर)(?:ः)?\s*[:\-\.,;\/]?\s*(.+)/i;
 
-    // خريطة لربط الحروف الهندية الصحيحة والخاطئة بالإجابة الصحيحة
-    const devanagariMap = { 'क': 0, 'ख': 1, 'ग': 2, 'घ': 3, 'ङ': 4, 'ि': 0 }; // اعتبار 'ि' كخطأ مطبعي لـ 'क'
+    const devanagariMap = { 'क': 0, 'ख': 1, 'ग': 2, 'घ': 3, 'ङ': 4, 'ि': 0 };
 
-    const isOption = (line) => optionPatterns.some(p => p.test(line));
-    const isAnswer = (line) => answerPattern.test(line);
-
-    const getNextNonEmptyLine = (startIndex) => {
-        for (let j = startIndex; j < lines.length; j++) {
-            if (lines[j]) return lines[j];
-        }
-        return null;
-    };
-
-    const looksLikeQuestion = (line, nextLine) => {
-        if (!line) return false;
-        if (questionStartPattern.test(line)) return true;
-        if (!isOption(line) && !isAnswer(line) && nextLine && isOption(nextLine)) {
-            return true;
-        }
-        return false;
-    };
+    // دوال مساعدة للتحقق من نوع السطر
+    const isOption = (line) => line && optionPatterns.some(p => p.test(line));
+    const isAnswer = (line) => line && answerPattern.test(line);
     
-    const getOptionMatch = (line) => {
+    const getOptionParts = (line) => {
         for (const pattern of optionPatterns) {
             const match = line.match(pattern);
             if (match) return match;
@@ -290,59 +275,75 @@ function extractQuestions(text) {
         return null;
     };
 
+    // **منطق جديد ومحسن** للتعرف على بداية السؤال
+    const isQuestionStart = (index) => {
+        const line = lines[index];
+        if (!line) return false;
+        if (questionStartPattern.test(line)) return true; // الحالة الأساسية: يبدأ برقم
+
+        if (isOption(line) || isAnswer(line)) return false; // لا يمكن أن يكون خيارًا أو إجابة
+        
+        // الحالة البديلة: سطر نصي يليه مباشرة سطر خيارات (لمعالجة الأسئلة بدون أرقام)
+        let lookaheadIndex = index + 1;
+        while (lookaheadIndex < lines.length && !lines[lookaheadIndex]) {
+            lookaheadIndex++; // تجاهل الأسطر الفارغة
+        }
+        if (lookaheadIndex < lines.length && isOption(lines[lookaheadIndex])) {
+            return true;
+        }
+
+        return false;
+    };
 
     // 3. الحلقة الرئيسية لتحليل النص
     let i = 0;
     while (i < lines.length) {
-        const currentLine = lines[i];
-        const nextNonEmpty = getNextNonEmptyLine(i + 1);
-
-        if (!looksLikeQuestion(currentLine, nextNonEmpty)) {
+        if (!isQuestionStart(i)) {
             i++;
             continue;
         }
 
-        // --- تم العثور على بداية سؤال ---
-        let questionText = currentLine;
+        // --- تم العثور على بداية كتلة سؤال ---
+        let questionText = lines[i];
         const options = [];
         let correctAnswerIndex = undefined;
         let k = i + 1;
 
-        // --- تجميع باقي نص السؤال (إذا كان متعدد الأسطر) ---
-        while (k < lines.length && lines[k] && !isOption(lines[k])) {
-            questionText += ' ' + lines[k].trim();
+        // --- تجميع نص السؤال بالكامل (لمعالجة النصوص المجزأة) ---
+        while (k < lines.length && !isOption(lines[k])) {
+            if (isQuestionStart(k) || isAnswer(lines[k])) break; // توقف إذا بدأ سؤال جديد أو ظهرت إجابة مبكرة
+            if (lines[k]) {
+                questionText += ' ' + lines[k];
+            }
             k++;
         }
 
-        // --- تجميع الخيارات (مع معالجة الأسطر الفارغة بينها) ---
+        // --- تجميع الخيارات بالكامل (مع معالجة الأسطر الفارغة والتكميلية) ---
         while (k < lines.length) {
             const line = lines[k];
-            if (!line) { // تجاهل الأسطر الفارغة
-                k++;
-                continue;
-            }
+            if (!line) { k++; continue; }
+            if (isAnswer(line) || isQuestionStart(k)) break;
 
-            if (isAnswer(line) || looksLikeQuestion(line, getNextNonEmptyLine(k + 1))) {
-                break; // توقف عند العثور على إجابة أو سؤال جديد
-            }
-
-            const optMatch = getOptionMatch(line);
-            if (optMatch) {
-                let optionText = optMatch[2].trim();
-                let continuationIndex = k + 1;
-                while (continuationIndex < lines.length && lines[continuationIndex] && !isOption(lines[continuationIndex]) && !isAnswer(lines[continuationIndex]) && !questionStartPattern.test(lines[continuationIndex])) {
-                    optionText += ' ' + lines[continuationIndex].trim();
-                    continuationIndex++;
+            const optParts = getOptionParts(line);
+            if (optParts) {
+                let optionText = optParts[2].trim();
+                let next_k = k + 1;
+                while (next_k < lines.length) {
+                    const nextLine = lines[next_k];
+                    if (!nextLine) { next_k++; continue; }
+                    if (isOption(nextLine) || isAnswer(nextLine) || isQuestionStart(next_k)) break;
+                    optionText += ' ' + nextLine;
+                    next_k++;
                 }
                 options.push(optionText);
-                k = continuationIndex;
+                k = next_k;
             } else {
-                break; // توقف إذا كان السطر ليس خيارًا
+                break;
             }
         }
         
-        // --- البحث عن الإجابة ---
-        if (k < lines.length && lines[k] && isAnswer(lines[k])) {
+        // --- تجميع الإجابة ---
+        if (k < lines.length && isAnswer(lines[k])) {
             const answerMatch = lines[k].match(answerPattern);
             if (answerMatch) {
                 let answerIdentifier = answerMatch[1].trim().replace(/[()\[\]{}\.\)]/g, '');
@@ -354,19 +355,20 @@ function extractQuestions(text) {
                     correctAnswerIndex = parseInt(answerIdentifier, 10) - 1;
                 }
             }
-            k++; // الانتقال إلى السطر التالي بعد الإجابة
+            k++;
         }
 
-        // --- إضافة السؤال المكتمل إلى القائمة ---
-        if (questionText.trim() && options.length >= 2 && correctAnswerIndex !== undefined && correctAnswerIndex >= 0 && correctAnswerIndex < options.length) {
+        // --- حفظ السؤال والتقدم للموقع التالي ---
+        if (questionText.trim() && options.length >= 2 && correctAnswerIndex !== undefined) {
+             // تنظيف نص السؤال من الترقيم الأولي
+            const cleanQuestionText = questionText.replace(questionStartPattern, '').trim();
             questions.push({
-                question: questionText.trim().replace(questionStartPattern, '').trim(),
+                question: cleanQuestionText,
                 options: options,
                 correctAnswerIndex: correctAnswerIndex
             });
         }
-        
-        i = k; // تحديث المؤشر الرئيسي
+        i = k;
     }
     
     return questions;
