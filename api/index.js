@@ -13,7 +13,6 @@ const bot = new TelegramBot(token);
 const userState = {};
 
 // وحدة التعامل مع الطلبات
-// وحدة التعامل مع الطلبات (النسخة النهائية والمصححة)
 module.exports = async (req, res) => {
     try {
         if (req.method !== 'POST') {
@@ -29,7 +28,6 @@ module.exports = async (req, res) => {
             const userId = message.from.id;
             const fileId = message.document.file_id;
 
-            // التحقق من حجم الملف
             const VERCEL_LIMIT_BYTES = 10 * 1024 * 1024;
             if (message.document.file_size > VERCEL_LIMIT_BYTES) {
                 await bot.sendMessage(chatId, `⚠️ عذرًا، حجم الملف يتجاوز الحد المسموح به (${'10 MB'}).`);
@@ -42,8 +40,6 @@ module.exports = async (req, res) => {
             }
 
             await bot.sendMessage(chatId, '📑 استلمت الملف، جاري تحليله واستخراج الأسئلة...');
-            // ... باقي كود تحليل PDF ...
-            // (لقد اختصرته هنا لأنه لم يتغير، لكن تأكد من أنه موجود في نسختك)
              try {
                 const fileLink = await bot.getFileLink(fileId);
                 const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
@@ -118,7 +114,6 @@ module.exports = async (req, res) => {
 
         // 3️⃣ التعامل مع الضغط على الأزرار (Callback Query)
         else if (update.callback_query) {
-            // ... الكود الكامل والصحيح الخاص بـ callback_query من الردود السابقة ...
              const callbackQuery = update.callback_query;
             const userId = callbackQuery.from.id;
             const chatId = callbackQuery.message.chat.id;
@@ -187,7 +182,7 @@ module.exports = async (req, res) => {
             const text = message.text;
 
           if (text.toLowerCase() === '/help') {
-        const fileId = 'BQACAgQAAxkBAAE7DSpoxZngmTGzsB_8dwKoygzU0Kag6wAC4hgAAoEOKVIe8Plc9LwL8TYE'; // استبدل هذا بـ file_id لملف PDF الخاص بك
+        const fileId = 'BQACAgQAAxkBAAE7DSpoxZngmTGzsB_8dwKoygzU0Kag6wAC4hgAAoEOKVIe8Plc9LwL8TYE';
         await bot.sendDocument(chatId, fileId, {
             caption: 'مرحباً بك! 👋\n\nإليك دليل المستخدم الشامل للبوت بصيغة PDF. 📖'
         });
@@ -238,47 +233,44 @@ module.exports = async (req, res) => {
     res.status(200).send('OK');
 };
 
-// ==== هذا الكود هو ترقية للكود الذي أرسلته، مع دمج كل الإصلاحات اللازمة ====
-
+// ===============================================================================================
+// ==== بداية دالة استخراج الأسئلة النهائية (النسخة الأكثر قوة واستقرارًا) ====
+// ===============================================================================================
 function extractQuestions(text) {
-    // 1. تنظيف النص الأولي وإزالة علامات الاقتباس
+    // 1. تنظيف النص الأولي وإزالة علامات الاقتباس الناتجة عن التجزئة
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     const lines = text.split('\n').map(l => l.trim().replace(/^"|"$/g, ''));
     const questions = [];
 
-    // 2. تعريف الأنماط (Regex) الشاملة
-    // الأنماط الإنجليزية والرقمية والرومانية من الكود الأصلي
-    const letterOptionPatterns = [
-        /^\s*[\-\*]?\s*([A-Z])[\.\)\-]\s*(.+)/i,
-        /^\s*([A-Z])\s*-\s*(.+)/i,
-        /^\s*[\(\[\{]([A-Z])[\)\]\}]\s*(.+)/i,
-    ];
-    const numberOptionPatterns = [
-        /^\s*[\-\*]?\s*(\d+)[\.\)\-]\s*(.+)/,
-        /^\s*(\d+)\s*-\s*(.+)/,
-        /^\s*[\(\[\{](\d+)[\)\]\}]\s*(.+)/,
-    ];
-    const romanOptionPatterns = [/^\s*([IVXLCDM]+)[\.\)\-]\s*(.+)/i];
-
-    // **إضافة جديدة: أنماط الحروف الهندية مع معالجة الأخطاء**
-    const devanagariOptionPatterns = [
-        /^\s*[\(\[\{]([क-ह]|ि)[\)\]\}]\s*(.+)/,
-        /^\s*([क-ह]|ि)[\.\)]\s*(.+)/
-    ];
-
-    // **دمج كل أنماط الخيارات معًا**
+    // 2. تعريف كل الأنماط المدعومة (مع إعادة الأنماط المحذوفة)
+    const letterOptionPatterns = [ /^\s*[\-\*]?\s*([A-Z])[\.\)\-]\s*(.+)/i, /^\s*([A-Z])\s*-\s*(.+)/i, /^\s*[\(\[\{]([A-Z])[\)\]\}]\s*(.+)/i ];
+    const numberOptionPatterns = [ /^\s*[\-\*]?\s*(\d+)[\.\)\-]\s*(.+)/, /^\s*(\d+)\s*-\s*(.+)/, /^\s*[\(\[\{](\d+)[\)\]\}]\s*(.+)/ ];
+    const romanOptionPatterns = [ /^\s*([IVXLCDM]+)[\.\)\-]\s*(.+)/i ];
+    const devanagariOptionPatterns = [ /^\s*[\(\[\{]([क-ह]|ि)[\)\]\}]\s*(.+)/, /^\s*([क-ह]|ि)[\.\)]\s*(.+)/ ];
+    
+    // دمج كل أنماط الخيارات معًا
     const optionPatterns = [...letterOptionPatterns, ...numberOptionPatterns, ...romanOptionPatterns, ...devanagariOptionPatterns];
     
-    // **نمط محدث وشامل للإجابات**
-    const answerPattern = /^\s*[\-\*]?\s*(?:सही उत्तर|उत्तर)(?:ः)?\s*[:\-\.,;\/]?\s*(.+)/i;
+    // نمط شامل للإجابات باللغتين
+    const answerPattern = /^\s*[\-\*]?\s*(?:Answer|Correct Answer|Solution|Ans|Sol|सही उत्तर|उत्तर)(?:ः)?\s*[:\-\.,;\/]?\s*(.+)/i;
     
-    // خريطة لربط الحروف الهندية بالإجابة الصحيحة
+    // خرائط وقيم مساعدة
     const devanagariMap = { 'क': 0, 'ख': 1, 'ग': 2, 'घ': 3, 'ङ': 4, 'ि': 0 };
+    function romanToNumber(roman) {
+        const R_MAP = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
+        let num = 0;
+        roman = roman.toUpperCase();
+        for (let i = 0; i < roman.length; i++) {
+            const current = R_MAP[roman[i]];
+            const next = i + 1 < roman.length ? R_MAP[roman[i + 1]] : 0;
+            if (next > current) { num -= current; } else { num += current; }
+        }
+        return num;
+    }
 
-    // دوال مساعدة للتحقق من نوع السطر
+    // دوال مساعدة للتحقق
     const isOption = (line) => line && optionPatterns.some(p => p.test(line));
     const isAnswer = (line) => line && answerPattern.test(line);
-    
     const getOptionParts = (line) => {
         for (const pattern of optionPatterns) {
             const match = line.match(pattern);
@@ -287,19 +279,23 @@ function extractQuestions(text) {
         return null;
     };
 
-    // **منطق محسن للتعرف على بداية السؤال بشكل دقيق جدًا**
+    // منطق محسن للتعرف على بداية السؤال
     const isQuestionStart = (index) => {
         const line = lines[index];
         if (!line || isAnswer(line)) return false;
-
-        // الحالة 1: يبدأ برقم ولكنه ليس خيارًا (لمعالجة "128سؤال...")
-        if (/^\d+/.test(line) && !isOption(line)) return true;
+        
+        // الحالة 1: يبدأ برقم ولكنه ليس خيارًا مرقمًا
+        if (/^\d+/.test(line) && !numberOptionPatterns.some(p => p.test(line))) {
+            return true;
+        }
         
         // الحالة 2: لا يبدأ برقم، ليس خيارًا، ولكن يليه خيار (للأسئلة غير المرقمة)
         if (!/^\d+/.test(line) && !isOption(line)) {
             let nextLineIndex = index + 1;
             while (nextLineIndex < lines.length && !lines[nextLineIndex]) { nextLineIndex++; }
-            if (nextLineIndex < lines.length && isOption(lines[nextLineIndex])) return true;
+            if (nextLineIndex < lines.length && isOption(lines[nextLineIndex])) {
+                return true;
+            }
         }
         return false;
     };
@@ -314,25 +310,27 @@ function extractQuestions(text) {
 
         let questionText = lines[i];
         const options = [];
+        const optionLines = []; 
         let correctAnswerIndex = undefined;
         let k = i + 1;
 
-        // --- تجميع نص السؤال الكامل (لمعالجة النصوص المجزأة) ---
+        // تجميع نص السؤال الكامل
         while (k < lines.length && !isOption(lines[k])) {
             if (isQuestionStart(k) || isAnswer(lines[k])) break;
             if (lines[k]) { questionText += ' ' + lines[k]; }
             k++;
         }
 
-        // --- تجميع الخيارات الكاملة (مع معالجة الأسطر الفارغة والتكميلية) ---
+        // تجميع الخيارات الكاملة
         while (k < lines.length) {
             const line = lines[k];
             if (!line) { k++; continue; }
             if (isAnswer(line) || isQuestionStart(k)) break;
-
+            
             const optParts = getOptionParts(line);
             if (optParts) {
-                let optionText = optParts[2].trim();
+                optionLines.push(line);
+                let optionText = optParts[optParts.length - 1].trim(); // آخر مجموعة التقاط هي النص دائمًا
                 let next_k = k + 1;
                 while (next_k < lines.length) {
                     const nextLine = lines[next_k];
@@ -343,27 +341,40 @@ function extractQuestions(text) {
                 }
                 options.push(optionText);
                 k = next_k;
-            } else { break; }
+            } else {
+                if (options.length > 0) { // اعتبره سطراً تكميلياً للخيار الأخير
+                    options[options.length - 1] += ' ' + line;
+                    k++;
+                } else {
+                    break;
+                }
+            }
         }
         
-        // --- تجميع الإجابة ---
+        // تجميع الإجابة
         if (k < lines.length && isAnswer(lines[k])) {
             const answerMatch = lines[k].match(answerPattern);
-            if (answerMatch) {
+            if (answerMatch && optionLines.length > 0) {
                 let answerIdentifier = answerMatch[1].trim().replace(/[()\[\]{}\.\)]/g, '');
-                if (devanagariMap.hasOwnProperty(answerIdentifier)) {
-                    correctAnswerIndex = devanagariMap[answerIdentifier];
-                } else if (/^[A-Z]$/i.test(answerIdentifier)) {
+                
+                const firstOptionLine = optionLines[0];
+                if (devanagariOptionPatterns.some(p=>p.test(firstOptionLine))) {
+                     if (devanagariMap.hasOwnProperty(answerIdentifier)) {
+                        correctAnswerIndex = devanagariMap[answerIdentifier];
+                    }
+                } else if (romanOptionPatterns.some(p=>p.test(firstOptionLine))) {
+                    correctAnswerIndex = romanToNumber(answerIdentifier) - 1;
+                } else if (letterOptionPatterns.some(p=>p.test(firstOptionLine))) {
                     correctAnswerIndex = answerIdentifier.toUpperCase().charCodeAt(0) - 'A'.charCodeAt(0);
-                } else if (/^\d+$/.test(answerIdentifier)) {
+                } else if (numberOptionPatterns.some(p=>p.test(firstOptionLine))) {
                     correctAnswerIndex = parseInt(answerIdentifier, 10) - 1;
                 }
             }
             k++;
         }
 
-        // --- حفظ السؤال ---
-        if (questionText.trim() && options.length >= 2 && correctAnswerIndex !== undefined && correctAnswerIndex >= 0) {
+        // حفظ السؤال
+        if (questionText.trim() && options.length >= 2 && correctAnswerIndex !== undefined && correctAnswerIndex >= 0 && correctAnswerIndex < options.length) {
             questions.push({
                 question: questionText.trim(),
                 options: options,
@@ -375,19 +386,19 @@ function extractQuestions(text) {
     
     return questions;
 }
+// ===============================================================================================
+// ==== نهاية دالة استخراج الأسئلة ====
+// ===============================================================================================
 
 function formatQuizText(quizData) {
-    // السؤال مع سطر فارغ بعده
     let formattedText = ` ${quizData.question}\n\n`;
     const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
 
-    // الخيارات بدون سطر فارغ بينها
     const formattedOptions = quizData.options.map((optionText, optIndex) => {
         return `${optionLetters[optIndex]}) ${optionText}`;
     });
-    formattedText += formattedOptions.join('\n'); // **التعديل هنا**
+    formattedText += formattedOptions.join('\n');
 
-    // الإجابة مع سطر فارغ قبلها
     if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
         const correctLetter = optionLetters[quizData.correctOptionId];
         const correctText = quizData.options[quizData.correctOptionId];
@@ -399,4 +410,3 @@ function formatQuizText(quizData) {
     }
     return formattedText;
 }
-
