@@ -239,15 +239,14 @@ module.exports = async (req, res) => {
 };
 
 function extractQuestions(text) {
-    // 1. تنظيف النص الأولي وإزالة علامات الاقتباس الناتجة عن التجزئة
+    // 1. تنظيف النص الأولي وإزالة علامات الاقتباس
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     const lines = text.split('\n').map(l => l.trim().replace(/^"|"$/g, ''));
     const questions = [];
 
-    // 2. تعريف الأنماط (Regex) الشاملة
-    const questionStartPattern = /^\d+[\.\)]/;
+    // 2. تعريف الأنماط والدوال المساعدة
+    const strictQuestionStartPattern = /^\d+[\.\)]/;
     
-    // نمط خيارات مرن يدعم الحروف الإنجليزية، الهندية، والأرقام (بما في ذلك الأخطاء المطبعية مثل 'ि')
     const optionLetter = 'A-Z|क-ह|ि';
     const optionPatterns = [
         new RegExp(`^\\s*[\\-\\*]?\\s*([${optionLetter}])\\s*-\\s*(.+)`, 'i'),
@@ -258,15 +257,14 @@ function extractQuestions(text) {
         /^\s*[\(\[\{](\d+)[\)\]\}]\s*(.+)/,
     ];
 
-    // **نمط محدث** ليتعرف على "उत्तर" و "सही उत्तर"
     const answerPattern = /^\s*[\-\*]?\s*(?:सही उत्तर|उत्तर)(?:ः)?\s*[:\-\.,;\/]?\s*(.+)/i;
 
     const devanagariMap = { 'क': 0, 'ख': 1, 'ग': 2, 'घ': 3, 'ङ': 4, 'ि': 0 };
 
-    // دوال مساعدة للتحقق من نوع السطر
     const isOption = (line) => line && optionPatterns.some(p => p.test(line));
     const isAnswer = (line) => line && answerPattern.test(line);
-    
+    const isStrictQuestionStart = (line) => line && strictQuestionStartPattern.test(line);
+
     const getOptionParts = (line) => {
         for (const pattern of optionPatterns) {
             const match = line.match(pattern);
@@ -275,54 +273,53 @@ function extractQuestions(text) {
         return null;
     };
 
-    // **منطق جديد ومحسن** للتعرف على بداية السؤال
-    const isQuestionStart = (index) => {
+    // **منطق محسن للبحث عن بداية سؤال (مرن)**
+    const isPotentialQuestionStart = (index) => {
         const line = lines[index];
         if (!line) return false;
-        if (questionStartPattern.test(line)) return true; // الحالة الأساسية: يبدأ برقم
+        if (isStrictQuestionStart(line)) return true;
 
-        if (isOption(line) || isAnswer(line)) return false; // لا يمكن أن يكون خيارًا أو إجابة
+        if (isOption(line) || isAnswer(line)) return false;
         
-        // الحالة البديلة: سطر نصي يليه مباشرة سطر خيارات (لمعالجة الأسئلة بدون أرقام)
         let lookaheadIndex = index + 1;
         while (lookaheadIndex < lines.length && !lines[lookaheadIndex]) {
-            lookaheadIndex++; // تجاهل الأسطر الفارغة
+            lookaheadIndex++;
         }
         if (lookaheadIndex < lines.length && isOption(lines[lookaheadIndex])) {
             return true;
         }
-
         return false;
     };
 
     // 3. الحلقة الرئيسية لتحليل النص
     let i = 0;
     while (i < lines.length) {
-        if (!isQuestionStart(i)) {
+        if (!isPotentialQuestionStart(i)) {
             i++;
             continue;
         }
 
-        // --- تم العثور على بداية كتلة سؤال ---
         let questionText = lines[i];
         const options = [];
         let correctAnswerIndex = undefined;
         let k = i + 1;
 
-        // --- تجميع نص السؤال بالكامل (لمعالجة النصوص المجزأة) ---
+        // --- تجميع نص السؤال الكامل ---
         while (k < lines.length && !isOption(lines[k])) {
-            if (isQuestionStart(k) || isAnswer(lines[k])) break; // توقف إذا بدأ سؤال جديد أو ظهرت إجابة مبكرة
+            // **استخدام التحقق الصارم هنا** لمنع قطع السؤال
+            if (isStrictQuestionStart(lines[k]) || isAnswer(lines[k])) break;
             if (lines[k]) {
                 questionText += ' ' + lines[k];
             }
             k++;
         }
 
-        // --- تجميع الخيارات بالكامل (مع معالجة الأسطر الفارغة والتكميلية) ---
+        // --- تجميع الخيارات الكاملة ---
         while (k < lines.length) {
             const line = lines[k];
             if (!line) { k++; continue; }
-            if (isAnswer(line) || isQuestionStart(k)) break;
+            // **استخدام التحقق الصارم هنا**
+            if (isAnswer(line) || isStrictQuestionStart(line)) break;
 
             const optParts = getOptionParts(line);
             if (optParts) {
@@ -331,7 +328,8 @@ function extractQuestions(text) {
                 while (next_k < lines.length) {
                     const nextLine = lines[next_k];
                     if (!nextLine) { next_k++; continue; }
-                    if (isOption(nextLine) || isAnswer(nextLine) || isQuestionStart(next_k)) break;
+                    // **استخدام التحقق الصارم هنا**
+                    if (isOption(nextLine) || isAnswer(nextLine) || isStrictQuestionStart(nextLine)) break;
                     optionText += ' ' + nextLine;
                     next_k++;
                 }
@@ -358,16 +356,21 @@ function extractQuestions(text) {
             k++;
         }
 
-        // --- حفظ السؤال والتقدم للموقع التالي ---
-        if (questionText.trim() && options.length >= 2 && correctAnswerIndex !== undefined) {
-             // تنظيف نص السؤال من الترقيم الأولي
-            const cleanQuestionText = questionText.replace(questionStartPattern, '').trim();
+        // --- حفظ السؤال والتقدم ---
+        if (questionText.trim() && options.length >= 2 && correctAnswerIndex !== undefined && correctAnswerIndex >= 0 && correctAnswerIndex < options.length) {
+            let qNumMatch = questionText.match(strictQuestionStartPattern);
+            let qText = questionText;
+            if(qNumMatch){
+                 qText = questionText.substring(qNumMatch[0].length).trim();
+            }
+
             questions.push({
-                question: cleanQuestionText,
+                question: qText,
                 options: options,
                 correctAnswerIndex: correctAnswerIndex
             });
         }
+        
         i = k;
     }
     
