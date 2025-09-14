@@ -239,14 +239,12 @@ module.exports = async (req, res) => {
 };
 
 function extractQuestions(text) {
-    // 1. تنظيف النص الأولي وإزالة علامات الاقتباس
+    // 1. تنظيف النص الأولي
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     const lines = text.split('\n').map(l => l.trim().replace(/^"|"$/g, ''));
     const questions = [];
 
     // 2. تعريف الأنماط والدوال المساعدة
-    const strictQuestionStartPattern = /^\d+[\.\)]/;
-    
     const optionLetter = 'A-Z|क-ह|ि';
     const optionPatterns = [
         new RegExp(`^\\s*[\\-\\*]?\\s*([${optionLetter}])\\s*-\\s*(.+)`, 'i'),
@@ -256,15 +254,13 @@ function extractQuestions(text) {
         /^\s*[\-\*]?\s*(\d+)\s*-\s*(.+)/,
         /^\s*[\(\[\{](\d+)[\)\]\}]\s*(.+)/,
     ];
-
+    
     const answerPattern = /^\s*[\-\*]?\s*(?:सही उत्तर|उत्तर)(?:ः)?\s*[:\-\.,;\/]?\s*(.+)/i;
-
     const devanagariMap = { 'क': 0, 'ख': 1, 'ग': 2, 'घ': 3, 'ङ': 4, 'ि': 0 };
 
     const isOption = (line) => line && optionPatterns.some(p => p.test(line));
     const isAnswer = (line) => line && answerPattern.test(line);
-    const isStrictQuestionStart = (line) => line && strictQuestionStartPattern.test(line);
-
+    
     const getOptionParts = (line) => {
         for (const pattern of optionPatterns) {
             const match = line.match(pattern);
@@ -273,20 +269,26 @@ function extractQuestions(text) {
         return null;
     };
 
-    // **منطق محسن للبحث عن بداية سؤال (مرن)**
-    const isPotentialQuestionStart = (index) => {
+    // **منطق جديد كليًا للتعرف على بداية السؤال**
+    const isQuestionStart = (index) => {
         const line = lines[index];
         if (!line) return false;
-        if (isStrictQuestionStart(line)) return true;
+        if (isAnswer(line)) return false;
 
-        if (isOption(line) || isAnswer(line)) return false;
-        
-        let lookaheadIndex = index + 1;
-        while (lookaheadIndex < lines.length && !lines[lookaheadIndex]) {
-            lookaheadIndex++;
-        }
-        if (lookaheadIndex < lines.length && isOption(lines[lookaheadIndex])) {
+        // الحالة 1: يبدأ برقم ولكنه ليس خيارًا (أكثر دقة)
+        if (/^\d+/.test(line) && !isOption(line)) {
             return true;
+        }
+        
+        // الحالة 2: لا يبدأ برقم، ليس خيارًا، ولكن يليه خيار (للأسئلة غير المرقمة)
+        if (!/^\d+/.test(line) && !isOption(line)) {
+            let nextLineIndex = index + 1;
+            while (nextLineIndex < lines.length && !lines[nextLineIndex]) {
+                nextLineIndex++; // تجاهل الأسطر الفارغة
+            }
+            if (nextLineIndex < lines.length && isOption(lines[nextLineIndex])) {
+                return true;
+            }
         }
         return false;
     };
@@ -294,7 +296,7 @@ function extractQuestions(text) {
     // 3. الحلقة الرئيسية لتحليل النص
     let i = 0;
     while (i < lines.length) {
-        if (!isPotentialQuestionStart(i)) {
+        if (!isQuestionStart(i)) {
             i++;
             continue;
         }
@@ -306,11 +308,8 @@ function extractQuestions(text) {
 
         // --- تجميع نص السؤال الكامل ---
         while (k < lines.length && !isOption(lines[k])) {
-            // **استخدام التحقق الصارم هنا** لمنع قطع السؤال
-            if (isStrictQuestionStart(lines[k]) || isAnswer(lines[k])) break;
-            if (lines[k]) {
-                questionText += ' ' + lines[k];
-            }
+            if (isQuestionStart(k) || isAnswer(lines[k])) break;
+            if (lines[k]) { questionText += ' ' + lines[k]; }
             k++;
         }
 
@@ -318,8 +317,7 @@ function extractQuestions(text) {
         while (k < lines.length) {
             const line = lines[k];
             if (!line) { k++; continue; }
-            // **استخدام التحقق الصارم هنا**
-            if (isAnswer(line) || isStrictQuestionStart(line)) break;
+            if (isAnswer(line) || isQuestionStart(k)) break;
 
             const optParts = getOptionParts(line);
             if (optParts) {
@@ -328,16 +326,13 @@ function extractQuestions(text) {
                 while (next_k < lines.length) {
                     const nextLine = lines[next_k];
                     if (!nextLine) { next_k++; continue; }
-                    // **استخدام التحقق الصارم هنا**
-                    if (isOption(nextLine) || isAnswer(nextLine) || isStrictQuestionStart(nextLine)) break;
+                    if (isOption(nextLine) || isAnswer(nextLine) || isQuestionStart(next_k)) break;
                     optionText += ' ' + nextLine;
                     next_k++;
                 }
                 options.push(optionText);
                 k = next_k;
-            } else {
-                break;
-            }
+            } else { break; }
         }
         
         // --- تجميع الإجابة ---
@@ -356,21 +351,14 @@ function extractQuestions(text) {
             k++;
         }
 
-        // --- حفظ السؤال والتقدم ---
-        if (questionText.trim() && options.length >= 2 && correctAnswerIndex !== undefined && correctAnswerIndex >= 0 && correctAnswerIndex < options.length) {
-            let qNumMatch = questionText.match(strictQuestionStartPattern);
-            let qText = questionText;
-            if(qNumMatch){
-                 qText = questionText.substring(qNumMatch[0].length).trim();
-            }
-
+        // --- حفظ السؤال ---
+        if (questionText.trim() && options.length >= 2 && correctAnswerIndex !== undefined) {
             questions.push({
-                question: qText,
+                question: questionText.trim(),
                 options: options,
                 correctAnswerIndex: correctAnswerIndex
             });
         }
-        
         i = k;
     }
     
