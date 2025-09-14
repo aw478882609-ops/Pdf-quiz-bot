@@ -238,26 +238,44 @@ module.exports = async (req, res) => {
     res.status(200).send('OK');
 };
 
+// ==== هذا الكود هو ترقية للكود الذي أرسلته، مع دمج كل الإصلاحات اللازمة ====
+
 function extractQuestions(text) {
-    // 1. تنظيف النص الأولي
+    // 1. تنظيف النص الأولي وإزالة علامات الاقتباس
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     const lines = text.split('\n').map(l => l.trim().replace(/^"|"$/g, ''));
     const questions = [];
 
-    // 2. تعريف الأنماط والدوال المساعدة
-    const optionLetter = 'A-Z|क-ह|ि';
-    const optionPatterns = [
-        new RegExp(`^\\s*[\\-\\*]?\\s*([${optionLetter}])\\s*-\\s*(.+)`, 'i'),
-        new RegExp(`^\\s*[\\-\\*]?\\s*([${optionLetter}])[\\.\\)]\\s*(.+)`, 'i'),
-        new RegExp(`^\\s*[\\(\\[\\{]([${optionLetter}])[\\)\\]\\}]\\s*(.+)`, 'i'),
+    // 2. تعريف الأنماط (Regex) الشاملة
+    // الأنماط الإنجليزية والرقمية والرومانية من الكود الأصلي
+    const letterOptionPatterns = [
+        /^\s*[\-\*]?\s*([A-Z])[\.\)\-]\s*(.+)/i,
+        /^\s*([A-Z])\s*-\s*(.+)/i,
+        /^\s*[\(\[\{]([A-Z])[\)\]\}]\s*(.+)/i,
+    ];
+    const numberOptionPatterns = [
         /^\s*[\-\*]?\s*(\d+)[\.\)\-]\s*(.+)/,
-        /^\s*[\-\*]?\s*(\d+)\s*-\s*(.+)/,
+        /^\s*(\d+)\s*-\s*(.+)/,
         /^\s*[\(\[\{](\d+)[\)\]\}]\s*(.+)/,
     ];
+    const romanOptionPatterns = [/^\s*([IVXLCDM]+)[\.\)\-]\s*(.+)/i];
+
+    // **إضافة جديدة: أنماط الحروف الهندية مع معالجة الأخطاء**
+    const devanagariOptionPatterns = [
+        /^\s*[\(\[\{]([क-ह]|ि)[\)\]\}]\s*(.+)/,
+        /^\s*([क-ह]|ि)[\.\)]\s*(.+)/
+    ];
+
+    // **دمج كل أنماط الخيارات معًا**
+    const optionPatterns = [...letterOptionPatterns, ...numberOptionPatterns, ...romanOptionPatterns, ...devanagariOptionPatterns];
     
+    // **نمط محدث وشامل للإجابات**
     const answerPattern = /^\s*[\-\*]?\s*(?:सही उत्तर|उत्तर)(?:ः)?\s*[:\-\.,;\/]?\s*(.+)/i;
+    
+    // خريطة لربط الحروف الهندية بالإجابة الصحيحة
     const devanagariMap = { 'क': 0, 'ख': 1, 'ग': 2, 'घ': 3, 'ङ': 4, 'ि': 0 };
 
+    // دوال مساعدة للتحقق من نوع السطر
     const isOption = (line) => line && optionPatterns.some(p => p.test(line));
     const isAnswer = (line) => line && answerPattern.test(line);
     
@@ -269,26 +287,19 @@ function extractQuestions(text) {
         return null;
     };
 
-    // **منطق جديد كليًا للتعرف على بداية السؤال**
+    // **منطق محسن للتعرف على بداية السؤال بشكل دقيق جدًا**
     const isQuestionStart = (index) => {
         const line = lines[index];
-        if (!line) return false;
-        if (isAnswer(line)) return false;
+        if (!line || isAnswer(line)) return false;
 
-        // الحالة 1: يبدأ برقم ولكنه ليس خيارًا (أكثر دقة)
-        if (/^\d+/.test(line) && !isOption(line)) {
-            return true;
-        }
+        // الحالة 1: يبدأ برقم ولكنه ليس خيارًا (لمعالجة "128سؤال...")
+        if (/^\d+/.test(line) && !isOption(line)) return true;
         
         // الحالة 2: لا يبدأ برقم، ليس خيارًا، ولكن يليه خيار (للأسئلة غير المرقمة)
         if (!/^\d+/.test(line) && !isOption(line)) {
             let nextLineIndex = index + 1;
-            while (nextLineIndex < lines.length && !lines[nextLineIndex]) {
-                nextLineIndex++; // تجاهل الأسطر الفارغة
-            }
-            if (nextLineIndex < lines.length && isOption(lines[nextLineIndex])) {
-                return true;
-            }
+            while (nextLineIndex < lines.length && !lines[nextLineIndex]) { nextLineIndex++; }
+            if (nextLineIndex < lines.length && isOption(lines[nextLineIndex])) return true;
         }
         return false;
     };
@@ -306,14 +317,14 @@ function extractQuestions(text) {
         let correctAnswerIndex = undefined;
         let k = i + 1;
 
-        // --- تجميع نص السؤال الكامل ---
+        // --- تجميع نص السؤال الكامل (لمعالجة النصوص المجزأة) ---
         while (k < lines.length && !isOption(lines[k])) {
             if (isQuestionStart(k) || isAnswer(lines[k])) break;
             if (lines[k]) { questionText += ' ' + lines[k]; }
             k++;
         }
 
-        // --- تجميع الخيارات الكاملة ---
+        // --- تجميع الخيارات الكاملة (مع معالجة الأسطر الفارغة والتكميلية) ---
         while (k < lines.length) {
             const line = lines[k];
             if (!line) { k++; continue; }
@@ -352,7 +363,7 @@ function extractQuestions(text) {
         }
 
         // --- حفظ السؤال ---
-        if (questionText.trim() && options.length >= 2 && correctAnswerIndex !== undefined) {
+        if (questionText.trim() && options.length >= 2 && correctAnswerIndex !== undefined && correctAnswerIndex >= 0) {
             questions.push({
                 question: questionText.trim(),
                 options: options,
