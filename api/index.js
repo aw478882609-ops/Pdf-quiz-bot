@@ -237,7 +237,6 @@ module.exports = async (req, res) => {
     }
     res.status(200).send('OK');
 };
-
 function extractQuestions(text) {
     // الخطوة 1: توحيد وتنظيف النص
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\f/g, '\n').replace(/\u2028|\u2029/g, '\n');
@@ -249,69 +248,63 @@ function extractQuestions(text) {
 
     // [تجميع] كل الأنماط الشاملة للأسئلة والخيارات
     const questionPatterns = [/^(Q|Question|Problem|Quiz|السؤال)?\s*\d+[\s\.\)\]]/i];
-    // النسخة النهائية والمُدمجة
-const letterOptionPatterns = [
-    // نمط مرن وشامل يغطي:
-    // "A." أو "A)" أو "A-"
-    // وأيضًا "- A." أو "* B." (مع رمز في البداية)
-    /^\s*[\-\*]?\s*([A-Z])[\.\)\-]\s*(.+)/i,
-
-    // نمط منفصل ومهم لدعم "A - " (مع مسافات حول الشرطة)
-    /^\s*([A-Z])\s*-\s*(.+)/i,
-
-    // نمط الأقواس الذي كان موجودًا بالفعل مثل "(A)" أو "[B]"
-    /^\s*[\(\[\{]([A-Z])[\)\]\}]\s*(.+)/i,
-];
-    // النسخة النهائية والمُدمجة
-const numberOptionPatterns = [
-    // نمط مرن وشامل يغطي:
-    // "1." أو "1)" أو "1-"
-    // وأيضًا "- 1." أو "* 2." (مع رمز في البداية)
-    /^\s*[\-\*]?\s*(\d+)[\.\)\-]\s*(.+)/,
-
-    // نمط منفصل ومهم لدعم "1 - " (مع مسافات حول الشرطة)
-    /^\s*(\d+)\s*-\s*(.+)/,
-
-    // نمط الأقواس الذي كان موجودًا بالفعل مثل "(1)" أو "[2]"
-    /^\s*[\(\[\{](\d+)[\)\]\}]\s*(.+)/,
-];
     
-    // النسخة النهائية والمُدمجة
-const romanOptionPatterns = [
-    // تم تحسينه ليدعم "I." أو "I)" وأيضًا "I-"
-    /^\s*([IVXLCDM]+)[\.\)\-]\s*(.+)/i,
-];
-    // دمج كل أنماط الخيارات معًا
-    const optionPatterns = [...letterOptionPatterns, ...numberOptionPatterns, ...romanOptionPatterns];
+    // الأنماط الإنجليزية والرقمية والرومانية
+    const letterOptionPatterns = [
+        /^\s*[\-\*]?\s*([A-Z])[\.\)\-]\s*(.+)/i,
+        /^\s*([A-Z])\s*-\s*(.+)/i,
+        /^\s*[\(\[\{]([A-Z])[\)\]\}]\s*(.+)/i,
+    ];
+    const numberOptionPatterns = [
+        /^\s*[\-\*]?\s*(\d+)[\.\)\-]\s*(.+)/,
+        /^\s*(\d+)\s*-\s*(.+)/,
+        /^\s*[\(\[\{](\d+)[\)\]\}]\s*(.+)/,
+    ];
+    const romanOptionPatterns = [
+        /^\s*([IVXLCDM]+)[\.\)\-]\s*(.+)/i,
+    ];
 
-    // الكود الجديد بعد إضافة كل الرموز
-    // الكود الجديد والمُحسَّن
-const answerPatterns = [/^\s*[\-\*]?\s*(Answer|Correct Answer|Solution|Ans|Sol)\s*[:\-\.,;\/]?\s*/i];
+    // **** الإضافة الجديدة: أنماط الحروف الهندية ****
+    const devanagariOptionPatterns = [
+        // نمط للتعرف على (क) أو [ख]
+        /^\s*[\(\[\{]([क-ह])[\)\]\}]\s*(.+)/,
+        // نمط للتعرف على ك. أو ख)
+        /^\s*([क-ह])[\.\)]\s*(.+)/
+    ];
+    
+    // دمج كل أنماط الخيارات معًا
+    const optionPatterns = [...letterOptionPatterns, ...numberOptionPatterns, ...romanOptionPatterns, ...devanagariOptionPatterns];
+
+    // **** التعديل الجديد: إضافة كلمة "उत्तर" ****
+    const answerPatterns = [/^\s*[\-\*]?\s*(Answer|Correct Answer|Solution|Ans|Sol|उत्तर(?:ः)?)\s*[:\-\.,;\/]?\s*/i];
 
     function findMatch(line, patterns) { for (const pattern of patterns) { const match = line.match(pattern); if (match) return match; } return null; }
 
-    // [تطوير] دالة جديدة للتحقق من النوع والتسلسل لجميع الأنماط
+    // **** إضافة جديدة: خريطة لترتيب الحروف الهندية وقيمتها الرقمية ****
+    const devanagariMap = { 'क': 0, 'ख': 1, 'ग': 2, 'घ': 3, 'ङ': 4, 'च': 5, 'छ': 6, 'ज': 7, 'झ': 8, 'ञ': 9 };
+    const devanagariSequenceMap = { 'क': 1, 'ख': 2, 'ग': 3, 'घ': 4, 'ङ': 5, 'च': 6, 'छ': 7, 'ज': 8, 'झ': 9, 'ञ': 10 };
+
+    function romanToNumber(roman) {
+        const map = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
+        let num = 0;
+        for (let i = 0; i < roman.length; i++) {
+            const current = map[roman[i].toUpperCase()];
+            const next = map[roman[i + 1] ? roman[i + 1].toUpperCase() : ''];
+            if (next && map[next] > current) {
+                num -= current;
+            } else {
+                num += current;
+            }
+        }
+        return num;
+    }
+
+    // **** تحديث: دالة التحقق من التسلسل لتدعم الحروف الهندية ****
     function validateOptionsSequence(optionLines) {
         if (optionLines.length < 2) return true;
 
         let style = null;
         let lastValue = null;
-
-        // دالة مساعدة لتحويل الأرقام الرومانية إلى أرقام عادية
-        function romanToNumber(roman) {
-            const map = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
-            let num = 0;
-            for (let i = 0; i < roman.length; i++) {
-                const current = map[roman[i]];
-                const next = map[roman[i + 1]];
-                if (next > current) {
-                    num -= current;
-                } else {
-                    num += current;
-                }
-            }
-            return num;
-        }
 
         for (let j = 0; j < optionLines.length; j++) {
             const line = optionLines[j];
@@ -323,6 +316,10 @@ const answerPatterns = [/^\s*[\-\*]?\s*(Answer|Correct Answer|Solution|Ans|Sol)\
                 currentStyle = 'numbers';
                 identifier = findMatch(line, numberOptionPatterns)[1];
                 currentValue = parseInt(identifier, 10);
+            } else if (findMatch(line, devanagariOptionPatterns)) {
+                currentStyle = 'devanagari';
+                identifier = findMatch(line, devanagariOptionPatterns)[1];
+                currentValue = devanagariSequenceMap[identifier];
             } else if (findMatch(line, letterOptionPatterns)) {
                 currentStyle = 'letters';
                 identifier = findMatch(line, letterOptionPatterns)[1].toUpperCase();
@@ -332,15 +329,13 @@ const answerPatterns = [/^\s*[\-\*]?\s*(Answer|Correct Answer|Solution|Ans|Sol)\
                 identifier = findMatch(line, romanOptionPatterns)[1].toUpperCase();
                 currentValue = romanToNumber(identifier);
             } else {
-                return false; // ليس خيارًا صالحًا
+                return false; 
             }
 
             if (j === 0) {
-                // تحديد النوع والقيمة الأولية من أول خيار
                 style = currentStyle;
                 lastValue = currentValue;
             } else {
-                // التحقق من تطابق النوع ومن التسلسل
                 if (currentStyle !== style || currentValue !== lastValue + 1) {
                     return false;
                 }
@@ -350,21 +345,20 @@ const answerPatterns = [/^\s*[\-\*]?\s*(Answer|Correct Answer|Solution|Ans|Sol)\
         return true;
     }
 
-
-    // [تعديل جذري] منطق جديد للبحث الذكي عن بداية كتلة السؤال
     while (i < lines.length) {
         const line = lines[i];
         if (!line) { i++; continue; }
 
-       const optionInFollowingLines = lines.slice(i + 1).some(l => findMatch(l, optionPatterns));
-const isQuestionStart = findMatch(line, questionPatterns) || (optionInFollowingLines && !findMatch(line, optionPatterns) && !findMatch(line, answerPatterns));
+        const optionInFollowingLines = lines.slice(i + 1).some(l => findMatch(l, optionPatterns));
+        const isQuestionStart = findMatch(line, questionPatterns) || (optionInFollowingLines && !findMatch(line, optionPatterns) && !findMatch(line, answerPatterns));
+        
         if (!isQuestionStart) { i++; continue; }
 
         let questionText = line;
         let potentialOptionsIndex = i + 1;
 
         let j = i + 1;
-        while (j < lines.length && !findMatch(lines[j], optionPatterns) && !findMatch(lines[j], answerPatterns)) {
+        while (j < lines.length && !findMatch(lines[j], optionPatterns) && !findMatch(lines[j], answerPatterns) && !findMatch(lines[j], questionPatterns)) {
             questionText += ' ' + lines[j].trim();
             potentialOptionsIndex = j + 1;
             j++;
@@ -375,39 +369,50 @@ const isQuestionStart = findMatch(line, questionPatterns) || (optionInFollowingL
             let k = potentialOptionsIndex;
             const optionLines = [];
 
+            // **** تعديل جذري: منطق جديد لمعالجة الخيارات متعددة الأسطر ****
             while (k < lines.length) {
                 const optLine = lines[k];
-                if (!optLine || findMatch(optLine, answerPatterns)) break;
+                if (!optLine) { k++; continue; }
+
+                if (findMatch(optLine, answerPatterns) || findMatch(optLine, questionPatterns)) {
+                    break;
+                }
                 
                 const optionMatch = findMatch(optLine, optionPatterns);
                 if (optionMatch) {
                     optionLines.push(optLine);
                     currentQuestion.options.push(optionMatch[2].trim());
-                    k++;
                 } else {
-                    break;
+                    if (currentQuestion.options.length > 0) {
+                        currentQuestion.options[currentQuestion.options.length - 1] += ' ' + optLine.trim();
+                    }
                 }
+                k++;
             }
             
             if (!validateOptionsSequence(optionLines)) { i++; continue; }
 
             if (k < lines.length && findMatch(lines[k], answerPatterns)) {
                 const answerLine = lines[k];
-                let answerText = answerLine.replace(answerPatterns[0], '').trim();
+                let answerText = answerLine.replace(findMatch(answerLine, answerPatterns)[0], '').trim();
                 let correctIndex = -1;
                 
-                const cleanAnswerText = answerText.replace(/^[A-Z\dIVXLCDM]+[\.\)]\s*/i, '').trim();
+                const cleanAnswerText = answerText.replace(/^[A-Z\dIVXLCDMक-ह]+[\.\)]\s*/i, '').trim();
                 correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === cleanAnswerText.toLowerCase());
 
                 if (correctIndex === -1) {
-                    const identifierMatch = answerText.match(/^[A-Z\dIVXLCDM]+/i);
+                    const identifierMatch = answerText.match(/^[A-Z\dIVXLCDMक-ह]+/i);
                     if (identifierMatch) {
-                        // منطق ذكي لتحديد الإجابة الصحيحة بناءً على نوع ترقيم الخيارات
                         const firstOptionLine = optionLines[0];
                         if(findMatch(firstOptionLine, numberOptionPatterns)) {
                             correctIndex = parseInt(identifierMatch[0], 10) - 1;
                         } else if(findMatch(firstOptionLine, letterOptionPatterns)) {
                             correctIndex = identifierMatch[0].toUpperCase().charCodeAt(0) - 'A'.charCodeAt(0);
+                        } else if(findMatch(firstOptionLine, devanagariOptionPatterns)) { // **** إضافة: تحديد الإجابة للحروف الهندية ****
+                             const devanagariChar = identifierMatch[0];
+                             if (devanagariMap.hasOwnProperty(devanagariChar)) {
+                                 correctIndex = devanagariMap[devanagariChar];
+                             }
                         } else if(findMatch(firstOptionLine, romanOptionPatterns)) {
                              correctIndex = romanToNumber(identifierMatch[0].toUpperCase()) - 1;
                         }
@@ -430,6 +435,7 @@ const isQuestionStart = findMatch(line, questionPatterns) || (optionInFollowingL
     }
     return questions;
 }
+
 function formatQuizText(quizData) {
     // السؤال مع سطر فارغ بعده
     let formattedText = ` ${quizData.question}\n\n`;
