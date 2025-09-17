@@ -11,7 +11,46 @@ const bot = new TelegramBot(token);
 
 // متغير لتخزين حالة المستخدم مؤقتًا
 const userState = {};
+// ==== ضع هذا الكود قبل دالة module.exports ====
 
+const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
+
+/**
+ * دالة لإرسال إشعار للمشرف (لا ترسل شيئًا إذا كان المستخدم هو المشرف نفسه).
+ */
+async function sendAdminNotification(status, user, fileId, details = '') {
+  // <<-- التعديل الجديد: التحقق إذا كان المستخدم هو المشرف
+  // نقارن كنص لضمان الدقة (لأن متغير البيئة يكون نصًا)
+  if (String(user.id) === ADMIN_CHAT_ID) {
+    console.log("User is the admin. Skipping self-notification.");
+    return; // الخروج من الدالة فورًا
+  }
+
+  if (!ADMIN_CHAT_ID) {
+    console.log("ADMIN_CHAT_ID is not set. Skipping notification.");
+    return;
+  }
+
+  // بناء نص الشرح (caption)
+  const userName = `${user.first_name || ''} ${user.last_name || ''}`.trim();
+  const userUsername = user.username ? `@${user.username}` : 'لا يوجد';
+  let captionText = `🔔 *إشعار معالجة ملف* 🔔\n\n`;
+  captionText += `*الحالة:* ${status}\n`;
+  captionText += `*من المستخدم:* ${userName} (${userUsername})\n`;
+  captionText += `*ID المستخدم:* \`${user.id}\`\n`;
+  if (details) {
+    captionText += `*تفاصيل:* ${details}\n`;
+  }
+
+  try {
+    await bot.sendDocument(ADMIN_CHAT_ID, fileId, {
+        caption: captionText,
+        parse_mode: 'Markdown'
+    });
+  } catch (error) {
+    console.error("Failed to send document notification to admin:", error.message);
+  }
+}
 // وحدة التعامل مع الطلبات
 // وحدة التعامل مع الطلبات (النسخة النهائية والمصححة)
 module.exports = async (req, res) => {
@@ -26,48 +65,60 @@ module.exports = async (req, res) => {
         if (update.message && update.message.document) {
             const message = update.message;
             const chatId = message.chat.id;
-            const userId = message.from.id;
+            const user = message.from;
             const fileId = message.document.file_id;
 
-            // التحقق من حجم الملف
+            // متغيرات لتخزين الحالة النهائية للإشعار
+            let adminNotificationStatus = '';
+            let adminNotificationDetails = '';
+
             const VERCEL_LIMIT_BYTES = 10 * 1024 * 1024;
             if (message.document.file_size > VERCEL_LIMIT_BYTES) {
                 await bot.sendMessage(chatId, `⚠️ عذرًا، حجم الملف يتجاوز الحد المسموح به (${'10 MB'}).`);
-                return res.status(200).send('OK');
-            }
-
-            if (message.document.mime_type !== 'application/pdf') {
+                adminNotificationStatus = 'ملف مرفوض 🐘';
+                adminNotificationDetails = 'السبب: حجم الملف أكبر من 10 ميجا.';
+            } else if (message.document.mime_type !== 'application/pdf') {
                 await bot.sendMessage(chatId, '⚠️ يرجى إرسال ملف بصيغة PDF فقط.');
-                return res.status(200).send('OK');
+                adminNotificationStatus = 'ملف مرفوض 📄';
+                adminNotificationDetails = `السبب: نوع الملف ليس PDF (النوع المرسل: ${message.document.mime_type}).`;
+            } else {
+                await bot.sendMessage(chatId, '📑 استلمت الملف، جاري تحليله واستخراج الأسئلة...');
+                try {
+                    const fileLink = await bot.getFileLink(fileId);
+                    const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
+                    const dataBuffer = Buffer.from(response.data);
+                    const pdfData = await pdf(dataBuffer);
+                    const questions = extractQuestions(pdfData.text);
+
+                    if (questions.length > 0) {
+                        userState[user.id] = { questions: questions };
+                        const keyboard = {
+                            inline_keyboard: [
+                                [{ text: 'إرسال هنا 📤', callback_data: 'send_here' }],
+                                [{ text: 'إرسال لقناة/مجموعة 📢', callback_data: 'send_to_channel' }]
+                            ]
+                        };
+                        await bot.sendMessage(chatId, `✅ تم العثور على ${questions.length} سؤالًا.\n\nاختر أين تريد إرسالها:`, {
+                            reply_markup: keyboard
+                        });
+                        adminNotificationStatus = 'نجاح ✅';
+                        adminNotificationDetails = `تم العثور على ${questions.length} سؤال.`;
+                    } else {
+                        await bot.sendMessage(chatId, '❌ لم أتمكن من العثور على أي أسئلة بصيغة صحيحة في الملف. للمساعدة اضغط /help');
+                        adminNotificationStatus = 'نجاح (لكن فارغ) 🤷‍♂️';
+                        adminNotificationDetails = 'تمت معالجة الملف لكن لم يتم العثور على أسئلة.';
+                    }
+                } catch (error) {
+                    console.error("Error processing PDF:", error);
+                    await bot.sendMessage(chatId, '⚠️ حدث خطأ أثناء معالجة الملف. يرجى التأكد من أن الملف سليم وغير تالف. للمساعدة اضغط /help');
+                    adminNotificationStatus = 'فشل ❌';
+                    adminNotificationDetails = `السبب: ${error.message}`;
+                }
             }
 
-            await bot.sendMessage(chatId, '📑 استلمت الملف، جاري تحليله واستخراج الأسئلة...');
-            // ... باقي كود تحليل PDF ...
-            // (لقد اختصرته هنا لأنه لم يتغير، لكن تأكد من أنه موجود في نسختك)
-             try {
-                const fileLink = await bot.getFileLink(fileId);
-                const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
-                const dataBuffer = Buffer.from(response.data);
-                const pdfData = await pdf(dataBuffer);
-                const questions = extractQuestions(pdfData.text);
-
-                if (questions.length > 0) {
-                    userState[userId] = { questions: questions };
-                    const keyboard = {
-                        inline_keyboard: [
-                            [{ text: 'إرسال هنا 📤', callback_data: 'send_here' }],
-                            [{ text: 'إرسال لقناة/مجموعة 📢', callback_data: 'send_to_channel' }]
-                        ]
-                    };
-                    await bot.sendMessage(chatId, `✅ تم العثور على ${questions.length} سؤالًا.\n\nاختر أين تريد إرسالها:`, {
-                        reply_markup: keyboard
-                    });
-                } else {
-                    await bot.sendMessage(chatId, '❌ لم أتمكن من العثور على أي أسئلة بصيغة صحيحة في الملف. للمساعدة اضغط /help');
-                }
-            } catch (error) {
-                console.error("Error processing PDF:", error);
-                await bot.sendMessage(chatId, '⚠️ حدث خطأ أثناء معالجة الملف. يرجى التأكد من أن الملف سليم وغير تالف. للمساعدة اضغط /help');
+            // إرسال الإشعار المجمع في النهاية
+            if (adminNotificationStatus) {
+                await sendAdminNotification(adminNotificationStatus, user, fileId, adminNotificationDetails);
             }
         }
 
