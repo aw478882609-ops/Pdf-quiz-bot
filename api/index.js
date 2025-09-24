@@ -337,7 +337,7 @@ const romanOptionPatterns = [
 
     // الكود الجديد بعد إضافة كل الرموز
     // الكود الجديد والمُحسَّن
-const answerPatterns = [/^\s*[\-\*]?\s*(Answer|Correct Answer|Solution|Ans|Sol|the right answer is)\s*[:\-\.,;\/]?\s*/i];
+const answerPatterns = [/^\s*[\-\*]?\s*(Answer|Correct Answer|Solution|Ans|Sol|The right answer is)\s*[:\-\.,;\/]?\s*/i];
 
     function findMatch(line, patterns) { for (const pattern of patterns) { const match = line.match(pattern); if (match) return match; } return null; }
 
