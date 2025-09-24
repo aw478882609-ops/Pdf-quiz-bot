@@ -92,13 +92,15 @@ module.exports = async (req, res) => {
 
                     if (questions.length > 0) {
                         userState[user.id] = { questions: questions };
+                        // ✨ التعديل: إضافة زر "إرسال وإغلاق"
                         const keyboard = {
                             inline_keyboard: [
                                 [{ text: 'إرسال هنا 📤', callback_data: 'send_here' }],
+                                [{ text: 'إرسال وإغلاق هنا 🔒', callback_data: 'send_and_close_here'}], //  <-- الزر الجديد
                                 [{ text: 'إرسال لقناة/مجموعة 📢', callback_data: 'send_to_channel' }]
                             ]
                         };
-                        await bot.sendMessage(chatId, `✅ تم العثور على ${questions.length} سؤالًا.\n\nاختر أين تريد إرسالها:`, {
+                        await bot.sendMessage(chatId, `✅ تم العثور على ${questions.length} سؤالًا.\n\nاختر أين وكيف تريد إرسالها:`, {
                             reply_markup: keyboard
                         });
                         adminNotificationStatus = 'نجاح ✅';
@@ -169,7 +171,6 @@ module.exports = async (req, res) => {
 
         // 3️⃣ التعامل مع الضغط على الأزرار (Callback Query)
         else if (update.callback_query) {
-            // ... الكود الكامل والصحيح الخاص بـ callback_query من الردود السابقة ...
              const callbackQuery = update.callback_query;
             const userId = callbackQuery.from.id;
             const chatId = callbackQuery.message.chat.id;
@@ -198,13 +199,22 @@ module.exports = async (req, res) => {
                     await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
                     return res.status(200).send('OK');
                 }
-                if (!gasWebAppUrl && (data === 'send_here' || data === 'confirm_send')) {
+                if (!gasWebAppUrl) {
                     await bot.editMessageText('⚠️ خطأ في الإعدادات: رابط خدمة الإرسال الخارجية غير موجود.', { chat_id: chatId, message_id: messageId });
                     return res.status(200).send('OK');
                 }
-                if (data === 'send_here') {
+                // ✨ التعديل: التعامل مع الزر الجديد
+                if (data === 'send_here' || data === 'send_and_close_here') {
                     const { questions } = userState[userId];
-                    const payload = { questions, targetChatId: chatId, originalChatId: chatId, startIndex: 0, chatType: 'private' };
+                    const shouldClose = data === 'send_and_close_here'; // تحديد ما إذا كان يجب الإغلاق
+                    const payload = { 
+                        questions, 
+                        targetChatId: chatId, 
+                        originalChatId: chatId, 
+                        startIndex: 0, 
+                        chatType: 'private',
+                        closePolls: shouldClose //  <-- إرسال الحالة الجديدة
+                    };
                     axios.post(gasWebAppUrl, payload).catch(err => console.error("Error calling GAS:", err.message));
                     await bot.answerCallbackQuery(callbackQuery.id);
                     await bot.editMessageText(`✅ تم إرسال المهمة للخدمة الخارجية.\n\nسيتم إرسال ${questions.length} سؤالًا هنا في الخلفية.`, { chat_id: chatId, message_id: messageId });
@@ -213,10 +223,20 @@ module.exports = async (req, res) => {
                     userState[userId].awaiting = 'channel_id';
                     await bot.answerCallbackQuery(callbackQuery.id);
                     await bot.editMessageText('يرجى إرسال معرف (ID) القناة أو المجموعة الآن.\n(مثال: @username أو -100123456789)', { chat_id: chatId, message_id: messageId });
-                } else if (data === 'confirm_send') {
+                
+                // ✨ التعديل: التعامل مع تأكيد الإرسال للقناة
+                } else if (data.startsWith('confirm_send')) { // تم تعديل الشرط ليبدأ بـ 'confirm_send'
                     if (userState[userId] && userState[userId].awaiting === 'send_confirmation') {
                         const { questions, targetChatId, targetChatTitle, chatType } = userState[userId];
-                        const payload = { questions, targetChatId, originalChatId: chatId, startIndex: 0, chatType };
+                        const shouldClose = data.endsWith('_and_close'); // التحقق من نوع الإرسال
+                        const payload = { 
+                            questions, 
+                            targetChatId, 
+                            originalChatId: chatId, 
+                            startIndex: 0, 
+                            chatType,
+                            closePolls: shouldClose //  <-- إرسال الحالة الجديدة
+                        };
                         axios.post(gasWebAppUrl, payload).catch(err => console.error("Error calling GAS:", err.message));
                         await bot.answerCallbackQuery(callbackQuery.id);
                         await bot.editMessageText(`✅ تم إرسال المهمة للخدمة الخارجية.\n\nسيتم إرسال ${questions.length} سؤالًا في الخلفية إلى "${targetChatTitle}".`, { chat_id: chatId, message_id: messageId });
@@ -238,10 +258,10 @@ module.exports = async (req, res) => {
             const text = message.text;
 
           if (text.toLowerCase() === '/help') {
-        const fileId = 'BQACAgQAAxkBAAE7DSpoxZngmTGzsB_8dwKoygzU0Kag6wAC4hgAAoEOKVIe8Plc9LwL8TYE'; // استبدل هذا بـ file_id لملف PDF الخاص بك
-        await bot.sendDocument(chatId, fileId, {
-            caption: 'مرحباً بك! 👋\n\nإليك دليل المستخدم الشامل للبوت بصيغة PDF. 📖'
-        });
+                const fileId = 'BQACAgQAAxkBAAE7DSpoxZngmTGzsB_8dwKoygzU0Kag6wAC4hgAAoEOKVIe8Plc9LwL8TYE'; // استبدل هذا بـ file_id لملف PDF الخاص بك
+                await bot.sendDocument(chatId, fileId, {
+                    caption: 'مرحباً بك! 👋\n\nإليك دليل المستخدم الشامل للبوت بصيغة PDF. 📖'
+                });
             }
                 
              if (userState[userId] && userState[userId].awaiting === 'channel_id') {
@@ -257,7 +277,9 @@ module.exports = async (req, res) => {
                     if (botMember.status === 'administrator' || botMember.status === 'creator') {
                         infoText += `▫️ *الحالة:* مشرف (Admin)\n`;
                         const canPost = botMember.can_post_messages;
+                        const canStopPoll = botMember.can_stop_polls; //  <-- التحقق من صلاحية إغلاق الاستطلاعات
                         infoText += `▫️ *إرسال الرسائل:* ${canPost ? '✅ يستطيع' : '❌ لا يستطيع'}\n`;
+                        infoText += `▫️ *إيقاف الاستطلاعات:* ${canStopPoll ? '✅ يستطيع' : '❌ لا يستطيع'}\n`; //  <-- عرض الصلاحية
                         if (canPost) canProceed = true;
                     } else {
                         infoText += `▫️ *الحالة:* مجرد عضو 🤷‍♂️\n`;
@@ -272,7 +294,14 @@ module.exports = async (req, res) => {
                             chatType: chatInfo.type
                         };
                         infoText += `هل أنت متأكد أنك تريد إرسال ${userState[userId].questions.length} سؤالًا؟`;
-                        const confirmationKeyboard = { inline_keyboard: [[{ text: '✅ نعم، قم بالإرسال', callback_data: 'confirm_send' }, { text: '❌ إلغاء', callback_data: 'cancel_send' }]] };
+                        // ✨ التعديل: إضافة أزرار جديدة لتأكيد الإرسال مع الإغلاق
+                        const confirmationKeyboard = { 
+                            inline_keyboard: [
+                                [{ text: '✅ نعم، إرسال فقط', callback_data: 'confirm_send' }],
+                                [{ text: '🔒 نعم، إرسال وإغلاق', callback_data: 'confirm_send_and_close' }],
+                                [{ text: '❌ إلغاء', callback_data: 'cancel_send' }]
+                            ] 
+                        };
                         await bot.sendMessage(chatId, infoText, { parse_mode: 'Markdown', reply_markup: confirmationKeyboard });
                     } else {
                         infoText += `⚠️ لا يمكن المتابعة. الصلاحيات غير كافية.`;
@@ -288,6 +317,8 @@ module.exports = async (req, res) => {
     }
     res.status(200).send('OK');
 };
+
+// ... باقي الدوال المساعدة (extractQuestions, formatQuizText) تبقى كما هي بدون تغيير ...
 
 function extractQuestions(text) {
     // الخطوة 1: توحيد وتنظيف النص
