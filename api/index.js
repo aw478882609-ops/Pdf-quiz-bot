@@ -328,9 +328,6 @@ else if (update.message && update.message.poll) {
     }
     res.status(200).send('OK');
 };
-
-// ... باقي الدوال المساعدة (extractQuestions, formatQuizText) تبقى كما هي بدون تغيير ...
-
 function extractQuestions(text) {
     // الخطوة 1: توحيد وتنظيف النص
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\f/g, '\n').replace(/\u2028|\u2029/g, '\n');
@@ -341,9 +338,7 @@ function extractQuestions(text) {
     let i = 0;
 
     // [تجميع] كل الأنماط الشاملة للأسئلة والخيارات
-    const questionPatterns = [/^(Q|Question|Problem|Quiz|السؤال)?\s*\d+[\s\.\)\]\-\ـ]/];
-
-  
+  const questionPatterns = [/^(Q|Question|Problem|Quiz|السؤال)?\s*\d+[\s\.\)\]\-\ـ]/];
     // النسخة النهائية والمُدمجة
 const letterOptionPatterns = [
     // نمط مرن وشامل يغطي:
@@ -381,7 +376,7 @@ const romanOptionPatterns = [
 
     // الكود الجديد بعد إضافة كل الرموز
     // الكود الجديد والمُحسَّن
-const answerPatterns = [/^\s*[\-\*]?\s*(Answer|Correct Answer|Solution|Ans|Sol|The right answer is)\s*[:\-\.,;\/]?\s*/i];
+const answerPatterns = [/^\s*[\-\*]?\s*(Answer|Correct Answer|Solution|Ans|Sol)\s*[:\-\.,;\/]?\s*/i];
 
     function findMatch(line, patterns) { for (const pattern of patterns) { const match = line.match(pattern); if (match) return match; } return null; }
 
@@ -525,7 +520,7 @@ const isQuestionStart = findMatch(line, questionPatterns) || (optionInFollowingL
     }
     return questions;
 }
-function formatQuizText(quizData) {
+ function formatQuizText(quizData) {
     // السؤال مع سطر فارغ بعده
     let formattedText = ` ${quizData.question}\n\n`;
     const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
