@@ -341,7 +341,7 @@ function extractQuestions(text) {
     let i = 0;
 
     // [تجميع] كل الأنماط الشاملة للأسئلة والخيارات
-    const questionPatterns = [/^(Q|Question|Problem|Quiz|السؤال)?\s*\d+[\s\.\)\]\-\ـ]/
+    const questionPatterns = [/^(Q|Question|Problem|Quiz|السؤال)?\s*\d+[\s\.\)\]\-\ـ]/];
 
   
     // النسخة النهائية والمُدمجة
