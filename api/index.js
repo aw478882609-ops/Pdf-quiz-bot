@@ -373,7 +373,7 @@ const romanOptionPatterns = [
 ];
     // دمج كل أنماط الخيارات معًا
     const optionPatterns = [...letterOptionPatterns, ...numberOptionPatterns, ...romanOptionPatterns];
-
+const explanationPatterns = [/^\s*[\-\*]?\s*(Rationale|Explanation|Rationale \/ Explanation)\s*[:\-\.,;\/]?\s*/i];
     // الكود الجديد بعد إضافة كل الرموز
     // الكود الجديد والمُحسَّن
 const answerPatterns = [/^\s*[\-\*]?\s*(Answer|Correct Answer|Solution|Ans|Sol)\s*[:\-\.,;\/]?\s*/i];
@@ -461,7 +461,12 @@ const isQuestionStart = findMatch(line, questionPatterns) || (optionInFollowingL
         }
         
         if (potentialOptionsIndex < lines.length && findMatch(lines[potentialOptionsIndex], optionPatterns)) {
-            const currentQuestion = { question: questionText.trim(), options: [], correctAnswerIndex: undefined };
+            const currentQuestion = { 
+    question: questionText.trim(), 
+    options: [], 
+    correctAnswerIndex: undefined, 
+    explanation: undefined 
+};
             let k = potentialOptionsIndex;
             const optionLines = [];
 
@@ -482,34 +487,54 @@ const isQuestionStart = findMatch(line, questionPatterns) || (optionInFollowingL
             if (!validateOptionsSequence(optionLines)) { i++; continue; }
 
             if (k < lines.length && findMatch(lines[k], answerPatterns)) {
-                const answerLine = lines[k];
-                let answerText = answerLine.replace(answerPatterns[0], '').trim();
-                let correctIndex = -1;
-                
-                const cleanAnswerText = answerText.replace(/^[A-Z\dIVXLCDM]+[\.\)]\s*/i, '').trim();
-                correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === cleanAnswerText.toLowerCase());
+    const answerLine = lines[k];
+    let answerText = answerLine.replace(answerPatterns[0], '').trim();
+    let correctIndex = -1;
 
-                if (correctIndex === -1) {
-                    const identifierMatch = answerText.match(/^[A-Z\dIVXLCDM]+/i);
-                    if (identifierMatch) {
-                        // منطق ذكي لتحديد الإجابة الصحيحة بناءً على نوع ترقيم الخيارات
-                        const firstOptionLine = optionLines[0];
-                        if(findMatch(firstOptionLine, numberOptionPatterns)) {
-                            correctIndex = parseInt(identifierMatch[0], 10) - 1;
-                        } else if(findMatch(firstOptionLine, letterOptionPatterns)) {
-                            correctIndex = identifierMatch[0].toUpperCase().charCodeAt(0) - 'A'.charCodeAt(0);
-                        } else if(findMatch(firstOptionLine, romanOptionPatterns)) {
-                             correctIndex = romanToNumber(identifierMatch[0].toUpperCase()) - 1;
-                        }
-                    }
-                }
-                 if (correctIndex >= 0 && correctIndex < currentQuestion.options.length) {
-                    currentQuestion.correctAnswerIndex = correctIndex;
-                 }
-                i = k + 1;
-            } else {
-                i = k;
+    const cleanAnswerText = answerText.replace(/^[A-Z\dIVXLCDM]+[\.\)]\s*/i, '').trim();
+    correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === cleanAnswerText.toLowerCase());
+
+    if (correctIndex === -1) {
+        const identifierMatch = answerText.match(/^[A-Z\dIVXLCDM]+/i);
+        if (identifierMatch) {
+            const firstOptionLine = optionLines[0];
+            if(findMatch(firstOptionLine, numberOptionPatterns)) {
+                correctIndex = parseInt(identifierMatch[0], 10) - 1;
+            } else if(findMatch(firstOptionLine, letterOptionPatterns)) {
+                correctIndex = identifierMatch[0].toUpperCase().charCodeAt(0) - 'A'.charCodeAt(0);
+            } else if(findMatch(firstOptionLine, romanOptionPatterns)) {
+                correctIndex = romanToNumber(identifierMatch[0].toUpperCase()) - 1;
             }
+        }
+    }
+
+    if (correctIndex >= 0 && correctIndex < currentQuestion.options.length) {
+        currentQuestion.correctAnswerIndex = correctIndex;
+    }
+
+    k++; // نتحرك بعد الإجابة
+
+    // 🔹 قراءة Rationale / Explanation بعد الإجابة
+    if (k < lines.length && findMatch(lines[k], explanationPatterns)) {
+        let explanationText = lines[k].replace(explanationPatterns[0], '').trim();
+        k++;
+        while (
+            k < lines.length &&
+            !findMatch(lines[k], questionPatterns) &&
+            !findMatch(lines[k], optionPatterns) &&
+            !findMatch(lines[k], answerPatterns) &&
+            !findMatch(lines[k], explanationPatterns)
+        ) {
+            explanationText += ' ' + lines[k].trim();
+            k++;
+        }
+        currentQuestion.explanation = explanationText.trim();
+    }
+
+    i = k;
+} else {
+    i = k;
+                                                     }
 
             if (currentQuestion.options.length > 1 && currentQuestion.correctAnswerIndex !== undefined) {
                 questions.push(currentQuestion);
