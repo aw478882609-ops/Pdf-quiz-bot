@@ -408,10 +408,13 @@ function extractQuestions(text) {
         currentQuestion.question = currentQuestion.question.trim();
         currentQuestion.explanation = currentQuestion.explanation.trim();
 
-        // 5. إضافة السؤال المكتمل إلى القائمة إذا كان صالحًا
         if (currentQuestion.options.length > 1 && currentQuestion.correctAnswerIndex !== undefined) {
-            questions.push(currentQuestion);
-        }
+    // 🛑 التعديل هنا: حذف الحقل إذا كان فارغاً تماماً
+    if (!currentQuestion.explanation) {
+        delete currentQuestion.explanation;
+    }
+    questions.push(currentQuestion);
+}
     }
 
     return questions;
