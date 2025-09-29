@@ -218,11 +218,11 @@ else if (update.message && update.message.poll) {
                 if (data === 'send_here' || data === 'send_and_close_here') {
                     const { questions } = userState[userId];
                     const shouldClose = data === 'send_and_close_here'; // تحديد ما إذا كان يجب الإغلاق
-                    const payload = { 
-                        questions, 
-                        targetChatId: chatId, 
-                        originalChatId: chatId, 
-                        startIndex: 0, 
+                    const payload = {
+                        questions,
+                        targetChatId: chatId,
+                        originalChatId: chatId,
+                        startIndex: 0,
                         chatType: 'private',
                         closePolls: shouldClose //  <-- إرسال الحالة الجديدة
                     };
@@ -234,17 +234,17 @@ else if (update.message && update.message.poll) {
                     userState[userId].awaiting = 'channel_id';
                     await bot.answerCallbackQuery(callbackQuery.id);
                     await bot.editMessageText('يرجى إرسال معرف (ID) القناة أو المجموعة الآن.\n(مثال: @username أو -100123456789)', { chat_id: chatId, message_id: messageId });
-                
+
                 // ✨ التعديل: التعامل مع تأكيد الإرسال للقناة
                 } else if (data.startsWith('confirm_send')) { // تم تعديل الشرط ليبدأ بـ 'confirm_send'
                     if (userState[userId] && userState[userId].awaiting === 'send_confirmation') {
                         const { questions, targetChatId, targetChatTitle, chatType } = userState[userId];
                         const shouldClose = data.endsWith('_and_close'); // التحقق من نوع الإرسال
-                        const payload = { 
-                            questions, 
-                            targetChatId, 
-                            originalChatId: chatId, 
-                            startIndex: 0, 
+                        const payload = {
+                            questions,
+                            targetChatId,
+                            originalChatId: chatId,
+                            startIndex: 0,
                             chatType,
                             closePolls: shouldClose //  <-- إرسال الحالة الجديدة
                         };
@@ -260,7 +260,7 @@ else if (update.message && update.message.poll) {
                 }
             }
         }
-        
+
         // 4️⃣ التعامل مع الرسائل النصية (ID القناة، /start، إلخ)
         else if (update.message && update.message.text) {
             const message = update.message;
@@ -274,7 +274,7 @@ else if (update.message && update.message.poll) {
                     caption: 'مرحباً بك! 👋\n\nإليك دليل المستخدم الشامل للبوت بصيغة PDF. 📖'
                 });
             }
-                
+
              if (userState[userId] && userState[userId].awaiting === 'channel_id') {
                 const targetChatId = text.trim();
                 try {
@@ -306,12 +306,12 @@ else if (update.message && update.message.poll) {
                         };
                         infoText += `هل أنت متأكد أنك تريد إرسال ${userState[userId].questions.length} سؤالًا؟`;
                         // ✨ التعديل: إضافة أزرار جديدة لتأكيد الإرسال مع الإغلاق
-                        const confirmationKeyboard = { 
+                        const confirmationKeyboard = {
                             inline_keyboard: [
                                 [{ text: '✅ نعم، إرسال فقط', callback_data: 'confirm_send' }],
                                 [{ text: '🔒 نعم، إرسال وإغلاق', callback_data: 'confirm_send_and_close' }],
                                 [{ text: '❌ إلغاء', callback_data: 'cancel_send' }]
-                            ] 
+                            ]
                         };
                         await bot.sendMessage(chatId, infoText, { parse_mode: 'Markdown', reply_markup: confirmationKeyboard });
                     } else {
@@ -328,6 +328,8 @@ else if (update.message && update.message.poll) {
     }
     res.status(200).send('OK');
 };
+
+// ==== بداية دالة استخراج الأسئلة المعدلة ====
 function extractQuestions(text) {
     // الخطوة 1: توحيد وتنظيف النص
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\f/g, '\n').replace(/\u2028|\u2029/g, '\n');
@@ -338,137 +340,79 @@ function extractQuestions(text) {
     let i = 0;
 
     // [تجميع] كل الأنماط الشاملة للأسئلة والخيارات
-  const questionPatterns = [/^(Q|Question|Problem|Quiz|السؤال)?\s*\d+[\s\.\)\]\-\ـ]/];
-    // النسخة النهائية والمُدمجة
-const letterOptionPatterns = [
-    // نمط مرن وشامل يغطي:
-    // "A." أو "A)" أو "A-"
-    // وأيضًا "- A." أو "* B." (مع رمز في البداية)
-    /^\s*[\-\*]?\s*([A-Z])[\.\)\-:]\s*(.+)/i,
-
-    // نمط منفصل ومهم لدعم "A - " (مع مسافات حول الشرطة)
-    /^\s*([A-Z])\s*-\s*(.+)/i,
-
-    // نمط الأقواس الذي كان موجودًا بالفعل مثل "(A)" أو "[B]"
-    /^\s*[\(\[\{]([A-Z])[\)\]\}]\s*(.+)/i,
-];
-    // النسخة النهائية والمُدمجة
-const numberOptionPatterns = [
-    // نمط مرن وشامل يغطي:
-    // "1." أو "1)" أو "1-"
-    // وأيضًا "- 1." أو "* 2." (مع رمز في البداية)
-    /^\s*[\-\*]?\s*(\d+)[\.\)\-:]\s*(.+)/,
-
-    // نمط منفصل ومهم لدعم "1 - " (مع مسافات حول الشرطة)
-    /^\s*(\d+)\s*-\s*(.+)/,
-
-    // نمط الأقواس الذي كان موجودًا بالفعل مثل "(1)" أو "[2]"
-    /^\s*[\(\[\{](\d+)[\)\]\}]\s*(.+)/,
-];
-    
-    // النسخة النهائية والمُدمجة
-const romanOptionPatterns = [
-    // تم تحسينه ليدعم "I." أو "I)" وأيضًا "I-"
-    /^\s*([IVXLCDM]+)[\.\)\-]\s*(.+)/i,
-];
-    // دمج كل أنماط الخيارات معًا
+    const questionPatterns = [/^(Q|Question|Problem|Quiz|السؤال)?\s*\d+[\s\.\)\]\-\ـ]/];
+    const letterOptionPatterns = [
+        /^\s*[\-\*]?\s*([A-Z])[\.\)\-:]\s*(.+)/i,
+        /^\s*([A-Z])\s*-\s*(.+)/i,
+        /^\s*[\(\[\{]([A-Z])[\)\]\}]\s*(.+)/i,
+    ];
+    const numberOptionPatterns = [
+        /^\s*[\-\*]?\s*(\d+)[\.\)\-:]\s*(.+)/,
+        /^\s*(\d+)\s*-\s*(.+)/,
+        /^\s*[\(\[\{](\d+)[\)\]\}]\s*(.+)/,
+    ];
+    const romanOptionPatterns = [
+        /^\s*([IVXLCDM]+)[\.\)\-]\s*(.+)/i,
+    ];
     const optionPatterns = [...letterOptionPatterns, ...numberOptionPatterns, ...romanOptionPatterns];
+    const answerPatterns = [/^\s*[\-\*]?\s*(Answer|Correct Answer|Solution|Ans|Sol)\s*[:\-\.,;\/]?\s*/i];
+    // ** التعديل الجديد: إضافة نمط للشرح **
+    const explanationPattern = /^\s*Rationale\s*\/\s*Explanation\s*:\s*(.*)/i;
 
-    // الكود الجديد بعد إضافة كل الرموز
-    // الكود الجديد والمُحسَّن
-const answerPatterns = [/^\s*[\-\*]?\s*(Answer|Correct Answer|Solution|Ans|Sol)\s*[:\-\.,;\/]?\s*/i];
 
     function findMatch(line, patterns) { for (const pattern of patterns) { const match = line.match(pattern); if (match) return match; } return null; }
 
-    // [تطوير] دالة جديدة للتحقق من النوع والتسلسل لجميع الأنماط
+    function romanToNumber(roman) {
+        const map = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
+        let num = 0;
+        for (let i = 0; i < roman.length; i++) {
+            const current = map[roman[i].toUpperCase()];
+            const next = map[roman[i + 1] ? roman[i + 1].toUpperCase() : ''];
+            if (next > current) { num -= current; } else { num += current; }
+        }
+        return num;
+    }
+
     function validateOptionsSequence(optionLines) {
         if (optionLines.length < 2) return true;
-
-        let style = null;
-        let lastValue = null;
-
-        // دالة مساعدة لتحويل الأرقام الرومانية إلى أرقام عادية
-        function romanToNumber(roman) {
-            const map = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
-            let num = 0;
-            for (let i = 0; i < roman.length; i++) {
-                const current = map[roman[i]];
-                const next = map[roman[i + 1]];
-                if (next > current) {
-                    num -= current;
-                } else {
-                    num += current;
-                }
-            }
-            return num;
-        }
-
+        let style = null; let lastValue = null;
         for (let j = 0; j < optionLines.length; j++) {
-            const line = optionLines[j];
-            let currentStyle = null;
-            let currentValue = null;
-            let identifier = '';
-
+            const line = optionLines[j]; let currentStyle = null; let currentValue = null;
             if (findMatch(line, numberOptionPatterns)) {
-                currentStyle = 'numbers';
-                identifier = findMatch(line, numberOptionPatterns)[1];
-                currentValue = parseInt(identifier, 10);
+                currentStyle = 'numbers'; currentValue = parseInt(findMatch(line, numberOptionPatterns)[1], 10);
             } else if (findMatch(line, letterOptionPatterns)) {
-                currentStyle = 'letters';
-                identifier = findMatch(line, letterOptionPatterns)[1].toUpperCase();
-                currentValue = identifier.charCodeAt(0);
+                currentStyle = 'letters'; currentValue = findMatch(line, letterOptionPatterns)[1].toUpperCase().charCodeAt(0);
             } else if (findMatch(line, romanOptionPatterns)) {
-                currentStyle = 'roman';
-                identifier = findMatch(line, romanOptionPatterns)[1].toUpperCase();
-                currentValue = romanToNumber(identifier);
-            } else {
-                return false; // ليس خيارًا صالحًا
-            }
-
-            if (j === 0) {
-                // تحديد النوع والقيمة الأولية من أول خيار
-                style = currentStyle;
-                lastValue = currentValue;
-            } else {
-                // التحقق من تطابق النوع ومن التسلسل
-                if (currentStyle !== style || currentValue !== lastValue + 1) {
-                    return false;
-                }
-                lastValue = currentValue;
-            }
+                currentStyle = 'roman'; currentValue = romanToNumber(findMatch(line, romanOptionPatterns)[1].toUpperCase());
+            } else { return false; }
+            if (j === 0) { style = currentStyle; lastValue = currentValue; }
+            else { if (currentStyle !== style || currentValue !== lastValue + 1) { return false; } lastValue = currentValue; }
         }
         return true;
     }
 
-
-    // [تعديل جذري] منطق جديد للبحث الذكي عن بداية كتلة السؤال
     while (i < lines.length) {
-        const line = lines[i];
+        let line = lines[i];
         if (!line) { i++; continue; }
 
-       const optionInFollowingLines = lines.slice(i + 1).some(l => findMatch(l, optionPatterns));
-const isQuestionStart = findMatch(line, questionPatterns) || (optionInFollowingLines && !findMatch(line, optionPatterns) && !findMatch(line, answerPatterns));
+        const isQuestionStart = findMatch(line, questionPatterns) || (lines.slice(i + 1).some(l => findMatch(l, optionPatterns)) && !findMatch(line, optionPatterns) && !findMatch(line, answerPatterns));
         if (!isQuestionStart) { i++; continue; }
 
         let questionText = line;
-        let potentialOptionsIndex = i + 1;
-
+        let optionsStartIndex = -1;
         let j = i + 1;
-        while (j < lines.length && !findMatch(lines[j], optionPatterns) && !findMatch(lines[j], answerPatterns)) {
+        while (j < lines.length && !findMatch(lines[j], optionPatterns)) {
             questionText += ' ' + lines[j].trim();
-            potentialOptionsIndex = j + 1;
             j++;
         }
-        
-        if (potentialOptionsIndex < lines.length && findMatch(lines[potentialOptionsIndex], optionPatterns)) {
-            const currentQuestion = { question: questionText.trim(), options: [], correctAnswerIndex: undefined };
-            let k = potentialOptionsIndex;
-            const optionLines = [];
+        optionsStartIndex = j;
 
+        if (optionsStartIndex < lines.length) {
+            const currentQuestion = { question: questionText.trim(), options: [], correctAnswerIndex: undefined, explanation: '' };
+            const optionLines = [];
+            let k = optionsStartIndex;
             while (k < lines.length) {
                 const optLine = lines[k];
-                if (!optLine || findMatch(optLine, answerPatterns)) break;
-                
                 const optionMatch = findMatch(optLine, optionPatterns);
                 if (optionMatch) {
                     optionLines.push(optLine);
@@ -478,48 +422,76 @@ const isQuestionStart = findMatch(line, questionPatterns) || (optionInFollowingL
                     break;
                 }
             }
-            
+
             if (!validateOptionsSequence(optionLines)) { i++; continue; }
 
-            if (k < lines.length && findMatch(lines[k], answerPatterns)) {
-                const answerLine = lines[k];
+            let answerIndex = k;
+            if (answerIndex < lines.length && findMatch(lines[answerIndex], answerPatterns)) {
+                const answerLine = lines[answerIndex];
                 let answerText = answerLine.replace(answerPatterns[0], '').trim();
                 let correctIndex = -1;
-                
+
                 const cleanAnswerText = answerText.replace(/^[A-Z\dIVXLCDM]+[\.\)]\s*/i, '').trim();
                 correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === cleanAnswerText.toLowerCase());
 
                 if (correctIndex === -1) {
                     const identifierMatch = answerText.match(/^[A-Z\dIVXLCDM]+/i);
                     if (identifierMatch) {
-                        // منطق ذكي لتحديد الإجابة الصحيحة بناءً على نوع ترقيم الخيارات
                         const firstOptionLine = optionLines[0];
-                        if(findMatch(firstOptionLine, numberOptionPatterns)) {
-                            correctIndex = parseInt(identifierMatch[0], 10) - 1;
-                        } else if(findMatch(firstOptionLine, letterOptionPatterns)) {
-                            correctIndex = identifierMatch[0].toUpperCase().charCodeAt(0) - 'A'.charCodeAt(0);
-                        } else if(findMatch(firstOptionLine, romanOptionPatterns)) {
-                             correctIndex = romanToNumber(identifierMatch[0].toUpperCase()) - 1;
-                        }
+                        if (findMatch(firstOptionLine, numberOptionPatterns)) { correctIndex = parseInt(identifierMatch[0], 10) - 1; }
+                        else if (findMatch(firstOptionLine, letterOptionPatterns)) { correctIndex = identifierMatch[0].toUpperCase().charCodeAt(0) - 'A'.charCodeAt(0); }
+                        else if (findMatch(firstOptionLine, romanOptionPatterns)) { correctIndex = romanToNumber(identifierMatch[0].toUpperCase()) - 1; }
                     }
                 }
-                 if (correctIndex >= 0 && correctIndex < currentQuestion.options.length) {
+                if (correctIndex >= 0 && correctIndex < currentQuestion.options.length) {
                     currentQuestion.correctAnswerIndex = correctIndex;
-                 }
-                i = k + 1;
-            } else {
-                i = k;
+                }
+                answerIndex++;
+            }
+
+            // **منطق استخراج الشرح الجديد**
+            let explanationText = '';
+            let rationaleFound = false;
+            let l = answerIndex;
+            while (l < lines.length) {
+                const currentLine = lines[l];
+                if (findMatch(currentLine, questionPatterns)) {
+                    break; // توقف عند السؤال التالي
+                }
+
+                if (!rationaleFound) {
+                    const rationaleMatch = currentLine.match(explanationPattern);
+                    if (rationaleMatch) {
+                        rationaleFound = true;
+                        if (rationaleMatch[1]) { // إذا كان هناك نص في نفس سطر البداية
+                            explanationText += rationaleMatch[1].trim() + ' ';
+                        }
+                    }
+                } else {
+                    // تجاهل أرقام الصفحات والأسطر الفارغة
+                    if (currentLine.trim() && !/^\s*Page\s*\d+\s*$/.test(currentLine.trim())) {
+                        explanationText += currentLine.trim() + ' ';
+                    }
+                }
+                l++;
+            }
+
+            if (explanationText) {
+                currentQuestion.explanation = explanationText.trim();
             }
 
             if (currentQuestion.options.length > 1 && currentQuestion.correctAnswerIndex !== undefined) {
                 questions.push(currentQuestion);
             }
+            i = l; // تحديث العداد الرئيسي
         } else {
             i++;
         }
     }
     return questions;
 }
+// ==== نهاية دالة استخراج الأسئلة المعدلة ====
+
  function formatQuizText(quizData) {
     // السؤال مع سطر فارغ بعده
     let formattedText = ` ${quizData.question}\n\n`;
