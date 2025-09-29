@@ -447,7 +447,11 @@ const answerPatterns = [/^\s*[\-\*]?\s*(Answer|Correct Answer|Solution|Ans|Sol)\
         if (!line) { i++; continue; }
 
        const optionInFollowingLines = lines.slice(i + 1).some(l => findMatch(l, optionPatterns));
-const isQuestionStart = findMatch(line, questionPatterns) || (optionInFollowingLines && !findMatch(line, optionPatterns) && !findMatch(line, answerPatterns));
+const isQuestionStart = findMatch(line, questionPatterns)
+  || (optionInFollowingLines
+      && !findMatch(line, optionPatterns)
+      && !findMatch(line, answerPatterns)
+      && !findMatch(line, explanationPatterns)); // لا نعتبر سطور الـ explanation كبداية سؤال
         if (!isQuestionStart) { i++; continue; }
 
         let questionText = line;
@@ -485,8 +489,7 @@ const isQuestionStart = findMatch(line, questionPatterns) || (optionInFollowingL
             }
             
             if (!validateOptionsSequence(optionLines)) { i++; continue; }
-
-            if (k < lines.length && findMatch(lines[k], answerPatterns)) {
+if (k < lines.length && findMatch(lines[k], answerPatterns)) {
     const answerLine = lines[k];
     let answerText = answerLine.replace(answerPatterns[0], '').trim();
     let correctIndex = -1;
@@ -498,12 +501,26 @@ const isQuestionStart = findMatch(line, questionPatterns) || (optionInFollowingL
         const identifierMatch = answerText.match(/^[A-Z\dIVXLCDM]+/i);
         if (identifierMatch) {
             const firstOptionLine = optionLines[0];
-            if(findMatch(firstOptionLine, numberOptionPatterns)) {
+
+            // دالة محلية لتحويل الأرقام الرومانية لو احتجناها
+            function romanToNumberLocal(roman) {
+                const map = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
+                let num = 0;
+                for (let r = 0; r < roman.length; r++) {
+                    const current = map[roman[r]];
+                    const next = map[roman[r + 1]];
+                    if (next && next > current) num -= current;
+                    else num += current;
+                }
+                return num;
+            }
+
+            if (findMatch(firstOptionLine, numberOptionPatterns)) {
                 correctIndex = parseInt(identifierMatch[0], 10) - 1;
-            } else if(findMatch(firstOptionLine, letterOptionPatterns)) {
+            } else if (findMatch(firstOptionLine, letterOptionPatterns)) {
                 correctIndex = identifierMatch[0].toUpperCase().charCodeAt(0) - 'A'.charCodeAt(0);
-            } else if(findMatch(firstOptionLine, romanOptionPatterns)) {
-                correctIndex = romanToNumber(identifierMatch[0].toUpperCase()) - 1;
+            } else if (findMatch(firstOptionLine, romanOptionPatterns)) {
+                correctIndex = romanToNumberLocal(identifierMatch[0].toUpperCase()) - 1;
             }
         }
     }
@@ -512,11 +529,14 @@ const isQuestionStart = findMatch(line, questionPatterns) || (optionInFollowingL
         currentQuestion.correctAnswerIndex = correctIndex;
     }
 
-    k++; // نتحرك بعد الإجابة
+    // نتحرك بعد سطر الإجابة
+    k++;
 
-    // 🔹 قراءة Rationale / Explanation بعد الإجابة
+    // 🔹 قراءة Rationale / Explanation بعد الإجابة (لو موجود)
     if (k < lines.length && findMatch(lines[k], explanationPatterns)) {
+        // ناخد أي نص في نفس السطر بعد "Rationale / Explanation:"
         let explanationText = lines[k].replace(explanationPatterns[0], '').trim();
+        // إذا النص كان فاضي في نفس السطر، نستمر للجمل التالية
         k++;
         while (
             k < lines.length &&
@@ -525,18 +545,18 @@ const isQuestionStart = findMatch(line, questionPatterns) || (optionInFollowingL
             !findMatch(lines[k], answerPatterns) &&
             !findMatch(lines[k], explanationPatterns)
         ) {
-            explanationText += ' ' + lines[k].trim();
+            if (lines[k]) explanationText += (explanationText ? ' ' : '') + lines[k].trim();
             k++;
         }
-        currentQuestion.explanation = explanationText.trim();
+        currentQuestion.explanation = explanationText.trim() || undefined;
     }
 
     i = k;
 } else {
     i = k;
-                                                     }
-
-            if (currentQuestion.options.length > 1 && currentQuestion.correctAnswerIndex !== undefined) {
+                     }
+            
+          if (currentQuestion.options.length > 1 && currentQuestion.correctAnswerIndex !== undefined) {
                 questions.push(currentQuestion);
             }
         } else {
