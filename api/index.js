@@ -57,6 +57,25 @@ module.exports = async (req, res) => {
         const body = await micro.json(req);
         const update = body;
 
+      // ✅ السماح فقط لمستخدمين محددين من خلال ALLOWED_USERS
+const allowedUsers = (process.env.ALLOWED_USERS || '')
+  .split(',')
+  .map(id => id.trim())
+  .filter(id => id);
+
+const currentUser = update.message ? update.message.from : 
+                   update.callback_query ? update.callback_query.from : null;
+
+if (currentUser && !allowedUsers.includes(String(currentUser.id))) {
+  if (update.message) {
+    await bot.sendMessage(
+      currentUser.id, 
+      "⚠️ غير مسموح لك باستخدام هذا البوت.\n\n📩 للحصول على تصريح، يرجى التواصل مع @aw478260"
+    );
+  }
+  return res.status(200).send('Forbidden');
+}
+      
         // 1️⃣ التعامل مع الملفات المرسلة (PDF)
         if (update.message && update.message.document) {
             const message = update.message;
