@@ -328,7 +328,7 @@ function extractQuestions(text) {
     const questionPattern = /^(Q|Question|Problem|Quiz|السؤال)?\s*\d+[:\.\)\]\-\ـ]\s*(.*)/i;
     const optionPattern = /^\s*([A-Z])[\.\)\-:]\s*(.+)/i;
     const answerPattern = /^\s*Correct Answer\s*:\s*([A-Z])/i;
-    const rationalePattern = /^\s*Rationale\s*\/\s*Explanation\s*:/i;
+    const rationalePattern = /^\s*(?:Rationale\s*\/\s*)?Explanation\s*:/i;
 
     // 3. العثور على بدايات كل الأسئلة لتحديد "الكتل"
     const questionStartIndices = [];
