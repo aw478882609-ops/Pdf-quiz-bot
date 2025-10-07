@@ -106,13 +106,13 @@ module.exports = async (req, res) => {
                         adminNotificationStatus = 'نجاح ✅';
                         adminNotificationDetails = `تم العثور على ${questions.length} سؤال.`;
                     } else {
-                        await bot.sendMessage(chatId, '❌ لم أتمكن من العثور على أي أسئلة بصيغة صحيحة في الملف تاكد ان النص داخل الملف قابل للنسخ وانه يشبه احد الصيغ المدعومه في دليل المستخدم. للمساعدة اضغط /help');
+                        await bot.sendMessage(chatId, '❌ لم أتمكن من العثور على أي أسئلة بصيغة صحيحة في الملف. للمساعدة اضغط /help');
                         adminNotificationStatus = 'نجاح (لكن فارغ) 🤷‍♂️';
                         adminNotificationDetails = 'تمت معالجة الملف لكن لم يتم العثور على أسئلة.';
                     }
                 } catch (error) {
                     console.error("Error processing PDF:", error);
-                    await bot.sendMessage(chatId, '⚠️ حدث خطأ أثناء معالجة الملف. يرجى التأكد من أن الملف سليم وغير تالف وتأكد انه بصيغة pdf. للمساعدة اضغط /help');
+                    await bot.sendMessage(chatId, '⚠️ حدث خطأ أثناء معالجة الملف. يرجى التأكد من أن الملف سليم وغير تالف. للمساعدة اضغط /help');
                     adminNotificationStatus = 'فشل ❌';
                     adminNotificationDetails = `السبب: ${error.message}`;
                 }
@@ -269,7 +269,7 @@ else if (update.message && update.message.poll) {
             const text = message.text;
 
           if (text.toLowerCase() === '/help') {
-                const fileId = 'BQACAgQAAxkBAAE72dRo2-EHmbty7PivB2ZsIz1WKkAXXgAC5BsAAtF24VLmLAPbHKW4IDYE'; // استبدل هذا بـ file_id لملف PDF الخاص بك
+                const fileId = 'BQACAgQAAxkBAAE7DSpoxZngmTGzsB_8dwKoygzU0Kag6wAC4hgAAoEOKVIe8Plc9LwL8TYE'; // استبدل هذا بـ file_id لملف PDF الخاص بك
                 await bot.sendDocument(chatId, fileId, {
                     caption: 'مرحباً بك! 👋\n\nإليك دليل المستخدم الشامل للبوت بصيغة PDF. 📖'
                 });
@@ -328,6 +328,9 @@ else if (update.message && update.message.poll) {
     }
     res.status(200).send('OK');
 };
+
+// ... باقي الدوال المساعدة (extractQuestions, formatQuizText) تبقى كما هي بدون تغيير ...
+
 function extractQuestions(text) {
     // الخطوة 1: توحيد وتنظيف النص
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\f/g, '\n').replace(/\u2028|\u2029/g, '\n');
@@ -338,13 +341,13 @@ function extractQuestions(text) {
     let i = 0;
 
     // [تجميع] كل الأنماط الشاملة للأسئلة والخيارات
-  const questionPatterns = [/^(Q|Question|Problem|Quiz|السؤال)?\s*\d+[\s\.\)\]\-\ـ]/];
+    const questionPatterns = [/^(Q|Question|Problem|Quiz|السؤال)?\s*\d+[\s\.\)\]]/i];
     // النسخة النهائية والمُدمجة
 const letterOptionPatterns = [
     // نمط مرن وشامل يغطي:
     // "A." أو "A)" أو "A-"
     // وأيضًا "- A." أو "* B." (مع رمز في البداية)
-    /^\s*[\-\*]?\s*([A-Z])[\.\)\-:]\s*(.+)/i,
+    /^\s*[\-\*]?\s*([A-Z])[\.\)\-]\s*(.+)/i,
 
     // نمط منفصل ومهم لدعم "A - " (مع مسافات حول الشرطة)
     /^\s*([A-Z])\s*-\s*(.+)/i,
@@ -357,7 +360,7 @@ const numberOptionPatterns = [
     // نمط مرن وشامل يغطي:
     // "1." أو "1)" أو "1-"
     // وأيضًا "- 1." أو "* 2." (مع رمز في البداية)
-    /^\s*[\-\*]?\s*(\d+)[\.\)\-:]\s*(.+)/,
+    /^\s*[\-\*]?\s*(\d+)[\.\)\-]\s*(.+)/,
 
     // نمط منفصل ومهم لدعم "1 - " (مع مسافات حول الشرطة)
     /^\s*(\d+)\s*-\s*(.+)/,
@@ -376,7 +379,7 @@ const romanOptionPatterns = [
 
     // الكود الجديد بعد إضافة كل الرموز
     // الكود الجديد والمُحسَّن
-const answerPatterns = [/^\s*[\-\*]?\s*(Answer|Correct Answer|Solution|Ans|Sol)\s*[:\-\.,;\/]?\s*/i];
+const answerPatterns = [/^\s*[\-\*]?\s*(Answer|Correct Answer|Solution|Ans|Sol|The right answer is)\s*[:\-\.,;\/]?\s*/i];
 
     function findMatch(line, patterns) { for (const pattern of patterns) { const match = line.match(pattern); if (match) return match; } return null; }
 
@@ -520,7 +523,7 @@ const isQuestionStart = findMatch(line, questionPatterns) || (optionInFollowingL
     }
     return questions;
 }
- function formatQuizText(quizData) {
+function formatQuizText(quizData) {
     // السؤال مع سطر فارغ بعده
     let formattedText = ` ${quizData.question}\n\n`;
     const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
