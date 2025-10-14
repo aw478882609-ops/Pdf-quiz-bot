@@ -9,12 +9,6 @@ const micro = require('micro');
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const bot = new TelegramBot(token);
 
-const originalSendMessage = bot.sendMessage.bind(bot);
-bot.sendMessage = (chatId, text, options = {}) => {
-  options.protect_content = true;
-  return originalSendMessage(chatId, text, options);
-};
-
 // متغير لتخزين حالة المستخدم مؤقتًا
 const userState = {};
 // ==== ضع هذا الكود قبل دالة module.exports ====
