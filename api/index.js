@@ -139,17 +139,17 @@ module.exports = async (req, res) => {
 
             // 2️⃣ التعامل مع الاختبارات (Quizzes) المعاد توجيهها
             else if (update.message && update.message.poll) {
-                // ... (الكود الخاص بهذا الجزء يبقى كما هو)
+                // الكود الخاص بهذا الجزء يبقى كما هو
             }
 
             // 3️⃣ التعامل مع الضغط على الأزرار (Callback Query)
             else if (update.callback_query) {
-                // ... (الكود الخاص بهذا الجزء يبقى كما هو)
+                // الكود الخاص بهذا الجزء يبقى كما هو
             }
 
             // 4️⃣ التعامل مع الرسائل النصية (ID القناة، /help، إلخ)
             else if (update.message && update.message.text) {
-                // ... (الكود الخاص بهذا الجزء يبقى كما هو)
+                // الكود الخاص بهذا الجزء يبقى كما هو
             }
 
         } finally {
@@ -167,33 +167,27 @@ module.exports = async (req, res) => {
 
 /**
  * ✨✨ === الدالة المُعدّلة: تبدأ بالذكاء الاصطناعي أولاً === ✨✨
- * @param {string} text The text extracted from the PDF.
- * @returns {Promise<Array>} A promise that resolves to an array of question objects.
  */
 async function extractQuestions(text) {
     let questions = [];
 
-    // لا نحاول استدعاء الذكاء الاصطناعي إذا كان النص قصيرًا جدًا
     if (text.trim().length > 50) {
         console.log("Attempting AI extraction first...");
         try {
-            // نبدأ بمحاولة الاستخراج عبر الـ AI
             questions = await extractWithAI(text);
         } catch (error) {
             console.error("AI extraction failed:", error.message);
-            // لا نرجع خطأ، بل نترك الفرصة للطريقة الثانية
             questions = []; 
         }
     }
 
-    // إذا فشل الذكاء الاصطناعي أو لم يجد شيئًا، نلجأ إلى طريقة Regex كخطة بديلة
     if (questions.length === 0) {
         console.log("AI method failed or found 0 questions. Falling back to Regex extraction...");
         try {
             questions = extractWithRegex(text);
         } catch (e) {
             console.error("Regex extraction also failed with an error:", e);
-            return []; // هنا فشلت كلتا الطريقتين
+            return [];
         }
     }
 
@@ -250,7 +244,6 @@ async function extractWithAI(text) {
         return [];
     } catch (error) {
         console.error("Error calling or parsing Gemini API response:", error.response ? error.response.data : error.message);
-        // نلقي خطأ ليتم التقاطه في دالة extractQuestions
         throw new Error("Failed to get a valid response from AI.");
     }
 }
