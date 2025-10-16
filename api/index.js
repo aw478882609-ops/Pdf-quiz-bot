@@ -9,15 +9,15 @@ const micro = require('micro');
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const bot = new TelegramBot(token);
 
-// متغيرات لتخزين حالة المستخدم مؤقتًا
+// متغير لتخزين حالة المستخدم مؤقتًا
 const userState = {};
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 
-// ✨ مجموعة لتتبع الرسائل قيد المعالجة لمنع تكرار التحليل
+// ✨ مجموعة لتتبع الرسائل قيد المعالجة لمنع التكرار
 const processingUpdates = new Set();
 
 /**
- * دالة لإرسال إشعار للمشرف.
+ * دالة لإرسال إشعار للمشرف (لا ترسل شيئًا إذا كان المستخدم هو المشرف نفسه).
  */
 async function sendAdminNotification(status, user, fileId, details = '') {
   if (String(user.id) === ADMIN_CHAT_ID) {
@@ -53,6 +53,9 @@ module.exports = async (req, res) => {
     res.status(200).send('OK');
 
     try {
+        if (req.method !== 'POST') {
+            return; // الخروج بصمت لأن الرد تم إرساله بالفعل
+        }
         const body = await micro.json(req);
         const update = body;
 
@@ -61,15 +64,18 @@ module.exports = async (req, res) => {
             return;
         }
 
-        // تحديد المعرف الفريد للتحديث لمنع التكرار (معرف الرسالة أو معرف الاستعلام)
+        // تحديد المعرف الفريد للتحديث لمنع التكرار
         const uniqueId = update.message ? `${update.message.chat.id}-${update.message.message_id}` : update.callback_query.id;
+        
+        // ✨ الخطوة 2: التحقق مما إذا كان هذا التحديث قيد المعالجة بالفعل
         if (processingUpdates.has(uniqueId)) {
             console.log(`Skipping duplicate update ID: ${uniqueId}`);
             return; // تجاهل التحديث المكرر
         }
 
         try {
-            processingUpdates.add(uniqueId); // ضع علامة على التحديث أنه قيد المعالجة
+            // ✨ الخطوة 3: قفل هذا التحديث لمنع معالجته مرة أخرى
+            processingUpdates.add(uniqueId);
 
             // 1️⃣ التعامل مع الملفات المرسلة (PDF)
             if (update.message && update.message.document) {
@@ -118,8 +124,8 @@ module.exports = async (req, res) => {
                             adminNotificationDetails = 'تمت معالجة الملف لكن لم يتم العثور على أسئلة.';
                         }
                     } catch (error) {
-                        console.error("Error processing PDF:", error.message);
-                        await bot.sendMessage(chatId, '⚠️ حدث خطأ أثناء معالجة الملف. يرجى التأكد من أن الملف سليم وغير تالف. للمساعدة اضغط /help');
+                        console.error("Error processing PDF:", error);
+                        await bot.sendMessage(chatId, '⚠️ حدث خطأ أثناء معالجة الملف. يرجى التأكد من أن الملف سليم وغير تالف وتأكد أنه بصيغة pdf. للمساعدة اضغط /help');
                         adminNotificationStatus = 'فشل ❌';
                         adminNotificationDetails = `السبب: ${error.message}`;
                     }
@@ -131,7 +137,47 @@ module.exports = async (req, res) => {
 
             // 2️⃣ التعامل مع الاختبارات (Quizzes) المعاد توجيهها
             else if (update.message && update.message.poll) {
-                // الكود الخاص بالتعامل مع الاختبارات
+                const message = update.message;
+                const poll = message.poll;
+
+                if (poll.type !== 'quiz') {
+                    return;
+                }
+
+                const chatId = message.chat.id;
+                const userId = message.from.id;
+                const quizData = {
+                    question: poll.question,
+                    options: poll.options.map(opt => opt.text),
+                    correctOptionId: poll.correct_option_id,
+                    explanation: poll.explanation || null
+                };
+
+                if (message.forward_date) {
+                    if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
+                        const formattedText = formatQuizText(quizData);
+                        await bot.sendMessage(chatId, formattedText, {
+                            reply_to_message_id: message.message_id
+                        });
+                    } else {
+                        if (!userState[userId] || !userState[userId].pending_polls) {
+                            userState[userId] = { pending_polls: {} };
+                        }
+                        const previewText = formatQuizText({ ...quizData, correctOptionId: null });
+                        const promptText = `${previewText}\n\n*يرجى تحديد الإجابة الصحيحة لهذا الاختبار:*`;
+                        const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+                        const keyboardButtons = quizData.options.map((option, index) => ({
+                            text: optionLetters[index] || (index + 1),
+                            callback_data: `poll_answer_${index}`
+                        }));
+                        const interactiveMessage = await bot.sendMessage(chatId, promptText, {
+                            parse_mode: 'Markdown',
+                            reply_to_message_id: message.message_id,
+                            reply_markup: { inline_keyboard: [keyboardButtons] }
+                        });
+                        userState[userId].pending_polls[interactiveMessage.message_id] = quizData;
+                    }
+                }
             }
 
             // 3️⃣ التعامل مع الضغط على الأزرار (Callback Query)
@@ -147,28 +193,24 @@ module.exports = async (req, res) => {
                     if (!userState[userId] || !userState[userId].pending_polls || !userState[userId].pending_polls[messageId]) {
                         await bot.answerCallbackQuery(callbackQuery.id, { text: 'هذه الجلسة انتهت أو تمت معالجتها.', show_alert: true });
                         await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
-                        return;
+                    } else {
+                        const poll_data = userState[userId].pending_polls[messageId];
+                        poll_data.correctOptionId = parseInt(data.split('_')[2], 10);
+                        const formattedText = formatQuizText(poll_data);
+                        await bot.editMessageText(formattedText, {
+                            chat_id: chatId,
+                            message_id: messageId,
+                        });
+                        delete userState[userId].pending_polls[messageId];
+                        await bot.answerCallbackQuery(callbackQuery.id);
                     }
-                    const poll_data = userState[userId].pending_polls[messageId];
-                    poll_data.correctOptionId = parseInt(data.split('_')[2], 10);
-                    const formattedText = formatQuizText(poll_data);
-                    await bot.editMessageText(formattedText, {
-                        chat_id: chatId,
-                        message_id: messageId,
-                    });
-                    delete userState[userId].pending_polls[messageId];
-                    await bot.answerCallbackQuery(callbackQuery.id);
                 } else {
                     if (!userState[userId] || !userState[userId].questions) {
                         await bot.answerCallbackQuery(callbackQuery.id, { text: 'انتهت جلسة استخراج الملف، يرجى إرسال الملف مرة أخرى.', show_alert: true });
                         await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
-                        return;
-                    }
-                    if (!gasWebAppUrl) {
+                    } else if (!gasWebAppUrl) {
                         await bot.editMessageText('⚠️ خطأ في الإعدادات: رابط خدمة الإرسال الخارجية غير موجود.', { chat_id: chatId, message_id: messageId });
-                        return;
-                    }
-                    if (data === 'send_here' || data === 'send_and_close_here') {
+                    } else if (data === 'send_here' || data === 'send_and_close_here') {
                         const { questions } = userState[userId];
                         const shouldClose = data === 'send_and_close_here';
                         const payload = { questions, targetChatId: chatId, originalChatId: chatId, startIndex: 0, chatType: 'private', closePolls: shouldClose };
@@ -260,7 +302,8 @@ module.exports = async (req, res) => {
             }
 
         } finally {
-            processingUpdates.delete(uniqueId); // قم بإزالة العلامة بعد انتهاء المعالجة
+            // ✨ الخطوة 4: إزالة القفل بعد انتهاء المعالجة لتمكين معالجة رسائل جديدة
+            processingUpdates.delete(uniqueId);
         }
     } catch (error) {
         console.error("General error after acknowledging Telegram:", error);
@@ -291,18 +334,14 @@ async function extractWithAI(text) {
         console.log("GEMINI_API_KEY is not set. Skipping AI extraction.");
         return [];
     }
-    // ✨ URL النهائي والصحيح الذي تم تأكيده
     const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-    
     const prompt = `
     Analyze the following text and extract all multiple-choice questions.
     For each question, provide:
     1. The full question text.
     2. A list of all possible options.
     3. The index of the correct answer (starting from 0).
-
     VERY IMPORTANT: Respond ONLY with a valid JSON array of objects. Each object should have these exact keys: "question", "options", "correctAnswerIndex". Do not include any text, notes, or markdown formatting before or after the JSON array.
-
     Example Response Format:
     [
       {
@@ -311,7 +350,6 @@ async function extractWithAI(text) {
         "correctAnswerIndex": 2
       }
     ]
-
     Here is the text to analyze:
     ---
     ${text}
