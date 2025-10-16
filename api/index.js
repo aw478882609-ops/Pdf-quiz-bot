@@ -369,7 +369,7 @@ async function extractWithAI(text) {
         console.log("GEMINI_API_KEY is not set. Skipping AI extraction.");
         return [];
     }
-    const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
     
     // ✨✨=== التعديل هنا ===✨✨
     // تم تحديث الـ prompt ليطلب استخراج الشرح "explanation" وتحديث مثال الاستجابة.
