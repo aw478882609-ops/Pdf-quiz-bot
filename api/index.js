@@ -11,7 +11,6 @@ const bot = new TelegramBot(token);
 
 // متغير لتخزين حالة المستخدم مؤقتًا
 const userState = {};
-// ==== ضع هذا الكود قبل دالة module.exports ====
 
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 
@@ -87,7 +86,6 @@ module.exports = async (req, res) => {
                     const dataBuffer = Buffer.from(response.data);
                     const pdfData = await pdf(dataBuffer);
 
-                    // ✨✨ === التعديل الرئيسي هنا: استخدام الدالة الجديدة غير المتزامنة === ✨✨
                     const questions = await extractQuestions(pdfData.text);
 
                     if (questions.length > 0) {
@@ -143,15 +141,12 @@ module.exports = async (req, res) => {
             };
 
             if (message.forward_date) {
-                // التحقق من وجود إجابة في الاختبار المعاد توجيهه
                 if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
-                    // إذا كانت الإجابة موجودة، يتم تحويل الاختبار إلى نص مباشرة
                     const formattedText = formatQuizText(quizData);
                     await bot.sendMessage(chatId, formattedText, {
                         reply_to_message_id: message.message_id
                     });
                 } else {
-                    // إذا لم تكن الإجابة موجودة، نطلب من المستخدم تحديدها
                     if (!userState[userId] || !userState[userId].pending_polls) {
                         userState[userId] = { pending_polls: {} };
                     }
@@ -181,7 +176,6 @@ module.exports = async (req, res) => {
             const data = callbackQuery.data;
             const gasWebAppUrl = process.env.GAS_WEB_APP_URL;
 
-            // التعامل مع تحديد إجابة الاختبار
             if (data.startsWith('poll_answer_')) {
                 if (!userState[userId] || !userState[userId].pending_polls || !userState[userId].pending_polls[messageId]) {
                     await bot.answerCallbackQuery(callbackQuery.id, { text: 'هذه الجلسة انتهت أو تمت معالجتها.', show_alert: true });
@@ -198,7 +192,6 @@ module.exports = async (req, res) => {
                 delete userState[userId].pending_polls[messageId];
                 await bot.answerCallbackQuery(callbackQuery.id);
             }
-            // التعامل مع أزرار إرسال الأسئلة
             else {
                 if (!userState[userId] || !userState[userId].questions) {
                     await bot.answerCallbackQuery(callbackQuery.id, { text: 'انتهت جلسة استخراج الملف، يرجى إرسال الملف مرة أخرى.', show_alert: true });
@@ -249,7 +242,7 @@ module.exports = async (req, res) => {
             const text = message.text;
 
             if (text.toLowerCase() === '/help') {
-                const fileId = 'BQACAgQAAxkBAAE72dRo2-EHmbty7PivB2ZsIz1WKkAXXgAC5BsAAtF24VLmLAPbHKW4IDYE'; // استبدل هذا بـ file_id لملف PDF الخاص بك
+                const fileId = 'BQACAgQAAxkBAAE72dRo2-EHmbty7PivB2ZsIz1WKkAXXgAC5BsAAtF24VLmLAPbHKW4IDYE';
                 await bot.sendDocument(chatId, fileId, {
                     caption: 'مرحباً بك! 👋\n\nإليك دليل المستخدم الشامل للبوت بصيغة PDF. 📖'
                 });
@@ -285,7 +278,6 @@ module.exports = async (req, res) => {
                             chatType: chatInfo.type
                         };
                         infoText += `هل أنت متأكد أنك تريد إرسال ${userState[userId].questions.length} سؤالًا؟`;
-                        // إضافة أزرار جديدة لتأكيد الإرسال مع الإغلاق
                         const confirmationKeyboard = { 
                             inline_keyboard: [
                                 [{ text: '✅ نعم، إرسال فقط', callback_data: 'confirm_send' }],
@@ -309,35 +301,26 @@ module.exports = async (req, res) => {
     res.status(200).send('OK');
 };
 
+
 // =================================================================
 // ✨✨ === قسم الدوال الخاصة باستخراج الأسئلة === ✨✨
 // =================================================================
 
-/**
- * الدالة الرئيسية لاستخراج الأسئلة. تجرب Regex أولاً، ثم تلجأ للذكاء الاصطناعي.
- */
 async function extractQuestions(text) {
-    // 1. أولاً، جرب طريقة Regex السريعة.
     let questions = extractWithRegex(text);
 
-    // 2. إذا فشلت طريقة Regex، استدعِ الذكاء الاصطناعي كخطة بديلة.
-    // (شرط ألا يكون النص فارغًا لتجنب استدعاءات غير ضرورية)
     if (questions.length === 0 && text.trim().length > 50) {
         console.log("Regex method failed. Falling back to AI extraction...");
         try {
             questions = await extractWithAI(text);
         } catch (error) {
             console.error("AI extraction failed:", error.message);
-            return []; // إرجاع مصفوفة فارغة إذا فشل الذكاء الاصطناعي أيضًا.
+            return [];
         }
     }
-
     return questions;
 }
 
-/**
- * دالة لاستخراج الأسئلة باستخدام الذكاء الاصطناعي (Google Gemini).
- */
 async function extractWithAI(text) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
@@ -345,28 +328,28 @@ async function extractWithAI(text) {
         return [];
     }
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`;
+    // ✨✨ === THE FIX IS HERE / التصحيح هنا === ✨✨
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.0-pro:generateContent?key=${apiKey}`;
     
-    // هذا هو "الأمر" الذي نرسله للذكاء الاصطناعي ليتبع التعليمات
     const prompt = `
-    حلل النص التالي واستخرج جميع أسئلة الاختيار من متعدد.
-    لكل سؤال، قم بتوفير:
-    1. نص السؤال الكامل.
-    2. قائمة بجميع الخيارات الممكنة.
-    3. فهرس الإجابة الصحيحة (يبدأ من 0).
+    Analyze the following text and extract all multiple-choice questions.
+    For each question, provide:
+    1. The full question text.
+    2. A list of all possible options.
+    3. The index of the correct answer (starting from 0).
 
-    مهم جدًا: قم بالرد فقط بمصفوفة JSON صالحة تحتوي على كائنات. يجب أن يحتوي كل كائن على هذه المفاتيح بالضبط: "question", "options", "correctAnswerIndex". لا تقم بتضمين أي نصوص أو ملاحظات أو تنسيق Markdown قبل أو بعد مصفوفة JSON.
+    VERY IMPORTANT: Respond ONLY with a valid JSON array of objects. Each object should have these exact keys: "question", "options", "correctAnswerIndex". Do not include any text, notes, or markdown formatting before or after the JSON array.
 
-    مثال على التنسيق المطلوب للرد:
+    Example Response Format:
     [
       {
-        "question": "ما هي عاصمة فرنسا؟",
-        "options": ["برلين", "مدريد", "باريس", "روما"],
+        "question": "What is the capital of France?",
+        "options": ["Berlin", "Madrid", "Paris", "Rome"],
         "correctAnswerIndex": 2
       }
     ]
 
-    هذا هو النص المراد تحليله:
+    Here is the text to analyze:
     ---
     ${text}
     ---
@@ -383,20 +366,16 @@ async function extractWithAI(text) {
             headers: { 'Content-Type': 'application/json' }
         });
 
-        // استخراج نص الرد من الذكاء الاصطناعي
         const aiResponseText = response.data.candidates[0].content.parts[0].text;
         
-        // تنظيف الرد للتأكد من أنه JSON صالح (أحيانًا يضيف الذكاء الاصطناعي علامات ```json)
         const cleanedJsonString = aiResponseText.replace(/```json/g, '').replace(/```/g, '').trim();
 
-        // تحويل النص إلى كائن JavaScript
         const questions = JSON.parse(cleanedJsonString);
         
         if (Array.isArray(questions)) {
             console.log(`AI successfully extracted ${questions.length} questions.`);
             return questions;
         }
-
         return [];
 
     } catch (error) {
@@ -405,9 +384,6 @@ async function extractWithAI(text) {
     }
 }
 
-/**
- * منطق استخراج الأسئلة الأصلي باستخدام Regex، أصبح الآن في دالة منفصلة.
- */
 function extractWithRegex(text) {
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\f/g, '\n').replace(/\u2028|\u2029/g, '\n');
     text = text.replace(/\n{2,}/g, '\n');
@@ -568,9 +544,6 @@ function extractWithRegex(text) {
     return questions;
 }
 
-/**
- * دالة لتنسيق نص الاختبار المحول.
- */
 function formatQuizText(quizData) {
     let formattedText = ` ${quizData.question}\n\n`;
     const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
