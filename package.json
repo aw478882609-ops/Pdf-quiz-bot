@@ -1,15 +1,15 @@
 {
-  "name": "telegram-pdf-bot",
+  "name": "telegram-pdf-quiz-bot",
   "version": "1.0.0",
-  "description": "A Telegram bot to extract questions from a PDF and create polls.",
+  "description": "A Telegram bot to extract quizzes from PDF files.",
   "main": "api/index.js",
   "scripts": {
-    "start": "micro"
+    "start": "node api/index.js"
   },
   "dependencies": {
-    "axios": "^1.6.8",
+    "axios": "^1.7.2",
     "micro": "^10.0.1",
-    "pdf-parse": "^1.1.1",
-    "node-telegram-bot-api": "^0.61.0"
+    "node-telegram-bot-api": "^0.66.0",
+    "pdf-parse": "^1.1.1"
   }
 }
