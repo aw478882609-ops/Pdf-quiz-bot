@@ -322,29 +322,52 @@ global.processingFiles.delete(fileId);
 // ✨✨ === قسم الدوال الخاصة باستخراج الأسئلة === ✨✨
 // =================================================================
 
-async function extractQuestions(text) {
-    let questions = extractWithRegex(text);
+// =================================================================
+// ✨✨ === قسم الدوال الخاصة باستخراج الأسئلة (الجزء المُعدّل) === ✨✨
+// =================================================================
 
-    if (questions.length === 0 && text.trim().length > 50) {
-        console.log("Regex method failed. Falling back to AI extraction...");
+/**
+ * ✨✨ === الدالة المُعدّلة: تبدأ بالذكاء الاصطناعي أولاً === ✨✨
+ * @param {string} text The text extracted from the PDF.
+ * @returns {Promise<Array>} A promise that resolves to an array of question objects.
+ */
+async function extractQuestions(text) {
+    let questions = [];
+
+    // لا نحاول استدعاء الذكاء الاصطناعي إذا كان النص قصيرًا جدًا
+    if (text.trim().length > 50) {
+        console.log("Attempting AI extraction first...");
         try {
+            // نبدأ بمحاولة الاستخراج عبر الـ AI
             questions = await extractWithAI(text);
         } catch (error) {
             console.error("AI extraction failed:", error.message);
-            return [];
+            // لا نرجع خطأ، بل نترك الفرصة للطريقة الثانية
+            questions = []; 
         }
     }
+
+    // إذا فشل الذكاء الاصطناعي أو لم يجد شيئًا، نلجأ إلى طريقة Regex كخطة بديلة
+    if (questions.length === 0) {
+        console.log("AI method failed or found 0 questions. Falling back to Regex extraction...");
+        try {
+            questions = extractWithRegex(text);
+        } catch (e) {
+            console.error("Regex extraction also failed with an error:", e);
+            return []; // هنا فشلت كلتا الطريقتين
+        }
+    }
+
     return questions;
 }
 
+// (دالة extractWithAI تبقى كما هي بدون تغيير)
 async function extractWithAI(text) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
         console.log("GEMINI_API_KEY is not set. Skipping AI extraction.");
         return [];
     }
-
-    // ✨✨ === THE FIX IS HERE / التصحيح هنا === ✨✨
     const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
     
     const prompt = `
@@ -353,9 +376,7 @@ async function extractWithAI(text) {
     1. The full question text.
     2. A list of all possible options.
     3. The index of the correct answer (starting from 0).
-
     VERY IMPORTANT: Respond ONLY with a valid JSON array of objects. Each object should have these exact keys: "question", "options", "correctAnswerIndex". Do not include any text, notes, or markdown formatting before or after the JSON array.
-
     Example Response Format:
     [
       {
@@ -364,7 +385,6 @@ async function extractWithAI(text) {
         "correctAnswerIndex": 2
       }
     ]
-
     Here is the text to analyze:
     ---
     ${text}
@@ -382,24 +402,28 @@ async function extractWithAI(text) {
             headers: { 'Content-Type': 'application/json' }
         });
 
-        const aiResponseText = response.data.candidates[0].content.parts[0].text;
-        
-        const cleanedJsonString = aiResponseText.replace(/```json/g, '').replace(/```/g, '').trim();
+        if (!response.data.candidates || response.data.candidates.length === 0 || !response.data.candidates[0].content) {
+            console.error("AI responded but with no valid content or candidates.");
+            return [];
+        }
 
-        const questions = JSON.parse(cleanedJsonString);
+        const aiResponseText = response.data.candidates[0].content.parts[0].text;
+        const cleanedJsonString = aiResponseText.replace(/```json/g, '').replace(/```/g, '').trim();
+        const parsedQuestions = JSON.parse(cleanedJsonString);
         
-        if (Array.isArray(questions)) {
-            console.log(`AI successfully extracted ${questions.length} questions.`);
-            return questions;
+        if (Array.isArray(parsedQuestions) && parsedQuestions.length > 0) {
+            console.log(`AI successfully extracted ${parsedQuestions.length} questions.`);
+            return parsedQuestions;
         }
         return [];
-
     } catch (error) {
-        console.error("Error calling Gemini API:", error.response ? error.response.data : error.message);
+        console.error("Error calling or parsing Gemini API response:", error.response ? error.response.data : error.message);
         throw new Error("Failed to get a valid response from AI.");
     }
 }
 
+
+// (دالة extractWithRegex تبقى كما هي بدون تغيير)
 function extractWithRegex(text) {
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\f/g, '\n').replace(/\u2028|\u2029/g, '\n');
     text = text.replace(/\n{2,}/g, '\n');
@@ -558,7 +582,7 @@ function extractWithRegex(text) {
         }
     }
     return questions;
-}
+    }
 
 function formatQuizText(quizData) {
     let formattedText = ` ${quizData.question}\n\n`;
