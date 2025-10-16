@@ -329,7 +329,7 @@ async function extractWithAI(text) {
     }
 
     // ✨✨ === THE FIX IS HERE / التصحيح هنا === ✨✨
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.0-pro:generateContent?key=${apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.0-pro:generateContent?key=${apiKey}`;
     
     const prompt = `
     Analyze the following text and extract all multiple-choice questions.
