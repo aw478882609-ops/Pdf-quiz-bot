@@ -138,50 +138,61 @@ global.processingFiles.add(fileId);
 global.processingFiles.delete(fileId);
         }
 
-        // 2️⃣ التعامل مع الاختبارات (Quizzes) المعاد توجيهها
-        else if (update.message && update.message.poll) {
-            const message = update.message;
-            const poll = message.poll;
+// 2️⃣ التعامل مع الاختبارات (Quizzes)
+else if (update.message && update.message.poll) {
+    const message = update.message;
+    const poll = message.poll;
 
-            if (poll.type !== 'quiz') {
-                return res.status(200).send('OK');
+    if (poll.type !== 'quiz') {
+        return res.status(200).send('OK');
+    }
+
+    const chatId = message.chat.id;
+    const userId = message.from.id;
+    const quizData = {
+        question: poll.question,
+        options: poll.options.map(opt => opt.text),
+        correctOptionId: poll.correct_option_id,
+        explanation: poll.explanation || null
+    };
+
+    if (message.forward_date) {
+        // ✨ التحسين الجديد: التحقق من وجود إجابة في الاختبار المعاد توجيهه
+        if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
+            // إذا كانت الإجابة موجودة، يتم تحويل الاختبار إلى نص مباشرة
+            const formattedText = formatQuizText(quizData);
+            await bot.sendMessage(chatId, formattedText, {
+                reply_to_message_id: message.message_id // للرد على الرسالة الأصلية
+            });
+        } else {
+            // إذا لم تكن الإجابة موجودة، نطلب من المستخدم تحديدها (السلوك القديم)
+            if (!userState[userId] || !userState[userId].pending_polls) {
+                userState[userId] = { pending_polls: {} };
             }
-
-            const chatId = message.chat.id;
-            const userId = message.from.id;
-            const quizData = {
-                question: poll.question,
-                options: poll.options.map(opt => opt.text),
-                correctOptionId: poll.correct_option_id,
-                explanation: poll.explanation || null
-            };
-
-            if (message.forward_date) {
-                if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
-                    const formattedText = formatQuizText(quizData);
-                    await bot.sendMessage(chatId, formattedText, {
-                        reply_to_message_id: message.message_id
-                    });
-                } else {
-                    if (!userState[userId] || !userState[userId].pending_polls) {
-                        userState[userId] = { pending_polls: {} };
-                    }
-                    const previewText = formatQuizText({ ...quizData, correctOptionId: null });
-                    const promptText = `${previewText}\n\n*يرجى تحديد الإجابة الصحيحة لهذا الاختبار:*`;
-                    const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
-                    const keyboardButtons = quizData.options.map((option, index) => ({
-                        text: optionLetters[index] || (index + 1),
-                        callback_data: `poll_answer_${index}`
-                    }));
-                    const interactiveMessage = await bot.sendMessage(chatId, promptText, {
-                        parse_mode: 'Markdown',
-                        reply_to_message_id: message.message_id,
-                        reply_markup: { inline_keyboard: [keyboardButtons] }
-                    });
-                    userState[userId].pending_polls[interactiveMessage.message_id] = quizData;
-                }
-            }
+            const previewText = formatQuizText({ ...quizData, correctOptionId: null });
+            const promptText = `${previewText}\n\n*يرجى تحديد الإجابة الصحيحة لهذا الاختبار:*`;
+            const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+            const keyboardButtons = quizData.options.map((option, index) => ({
+                text: optionLetters[index] || (index + 1),
+                callback_data: `poll_answer_${index}`
+            }));
+            const interactiveMessage = await bot.sendMessage(chatId, promptText, {
+                parse_mode: 'Markdown',
+                reply_to_message_id: message.message_id,
+                reply_markup: { inline_keyboard: [keyboardButtons] }
+            });
+            userState[userId].pending_polls[interactiveMessage.message_id] = quizData;
         }
+    } else {
+        // هذا الجزء يبقى كما هو للتعامل مع الاختبارات التي يتم إنشاؤها مباشرة
+        if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
+            const formattedText = formatQuizText(quizData);
+            await bot.sendMessage(chatId, formattedText);
+        } else {
+            await bot.sendMessage(chatId, "⚠️ هذا الاختبار لا يحتوي على إجابة صحيحة، لا يمكن تحويله تلقائيًا.");
+        }
+    }
+    }
 
         // 3️⃣ التعامل مع الضغط على الأزرار (Callback Query)
         else if (update.callback_query) {
