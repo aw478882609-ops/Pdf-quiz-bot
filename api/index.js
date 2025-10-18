@@ -372,8 +372,7 @@ async function extractQuestions(text) {
     return questions;
 }
 
-// (دالة extractWithAI تبقى كما هي بدون تغيير)
-// (دالة extractWithAI المُعدّلة لتشمل الشرح)
+// (دالة extractWithAI المُعدّلة لتشمل الشرح وترقيم الأسئلة)
 async function extractWithAI(text) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
@@ -382,28 +381,35 @@ async function extractWithAI(text) {
     }
     const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
     
-    // ✨✨=== التعديل هنا ===✨✨
-    // تم تحديث الـ prompt ليطلب استخراج الشرح "explanation" وتحديث مثال الاستجابة.
+    // ✨✨=== التعديل هنا: تحديث الـ prompt ليطلب رقم السؤال ===✨✨
     const prompt = `
     Analyze the following text and extract all multiple-choice questions.
     For each question, provide:
-    1. The full question text.
-    2. A list of all possible options.
-    3. The index of the correct answer (starting from 0).
-    4. The explanation for the answer, if one is provided in the text.
-    VERY IMPORTANT: Respond ONLY with a valid JSON array of objects. Each object should have these exact keys: "question", "options", "correctAnswerIndex", and optionally "explanation". The "explanation" key should only be present if an explanation is found in the source text. Do not include any text or markdown formatting outside the JSON array.
+    1. The question number as a string (e.g., "1", "Q2", "٣"), if it exists.
+    2. The full question text.
+    3. A list of all possible options.
+    4. The index of the correct answer (starting from 0).
+    5. The explanation for the answer, if one is provided in the text.
+    VERY IMPORTANT: Respond ONLY with a valid JSON array of objects. Each object should have these exact keys: "question", "options", "correctAnswerIndex", and optionally "questionNumber" and "explanation". The "questionNumber" key should only be present if a number is explicitly found next to the question in the source text. Do not include any text or markdown formatting outside the JSON array.
     Example Response Format:
     [
       {
+        "questionNumber": "1",
         "question": "What is the capital of France?",
         "options": ["Berlin", "Madrid", "Paris", "Rome"],
         "correctAnswerIndex": 2,
         "explanation": "Paris is the capital and most populous city of France."
       },
       {
+        "questionNumber": "Q2",
         "question": "Which planet is known as the Red Planet?",
         "options": ["Earth", "Mars", "Jupiter", "Venus"],
         "correctAnswerIndex": 1
+      },
+      {
+        "question": "Which of these is not a primary color?",
+        "options": ["Red", "Blue", "Green", "Yellow"],
+        "correctAnswerIndex": 2
       }
     ]
     Here is the text to analyze:
@@ -431,7 +437,7 @@ async function extractWithAI(text) {
         const aiResponseText = response.data.candidates[0].content.parts[0].text;
         // تنظيف الاستجابة من أي علامات إضافية قد يضعها النموذج
         const cleanedJsonString = aiResponseText.replace(/```json/g, '').replace(/```/g, '').trim();
-        const parsedQuestions = JSON.parse(cleanedJsonString);
+        let parsedQuestions = JSON.parse(cleanedJsonString);
         
         // التحقق من أن الاستجابة هي مصفوفة وبها بيانات
         if (Array.isArray(parsedQuestions) && parsedQuestions.length > 0) {
@@ -439,7 +445,17 @@ async function extractWithAI(text) {
             const areQuestionsValid = parsedQuestions.every(q => q.question && Array.isArray(q.options) && q.correctAnswerIndex !== undefined);
             if (areQuestionsValid) {
                 console.log(`AI successfully extracted ${parsedQuestions.length} questions.`);
+
+                // ✨✨=== التعديل الجديد: دمج رقم السؤال مع نص السؤال ===✨✨
+                parsedQuestions.forEach(q => {
+                    if (q.questionNumber) {
+                        q.question = `${q.questionNumber}) ${q.question}`;
+                        delete q.questionNumber; // حذف الخاصية بعد الدمج
+                    }
+                });
+                
                 return parsedQuestions;
+
             } else {
                  console.error("AI response is an array, but some objects are missing required keys.");
                  return [];
@@ -450,7 +466,7 @@ async function extractWithAI(text) {
         console.error("Error calling or parsing Gemini API response:", error.response ? error.response.data : error.message);
         throw new Error("Failed to get a valid response from AI.");
     }
-}
+          }
 
 
 // (دالة extractWithRegex تبقى كما هي بدون تغيير)
