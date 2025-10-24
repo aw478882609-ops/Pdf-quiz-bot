@@ -373,6 +373,7 @@ async function extractQuestions(text) {
 }
 
 // (دالة extractWithAI المُعدّلة لتشمل الشرح وترقيم الأسئلة)
+// (دالة extractWithAI المُعدّلة لتشمل الشرح وترقيم الأسئلة)
 async function extractWithAI(text) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
@@ -381,15 +382,18 @@ async function extractWithAI(text) {
     }
     const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
     
-    // ✨✨=== التعديل هنا: تحديث الـ prompt ليطلب رقم السؤال ===✨✨
+    // ✨✨=== التعديل هنا: تحديث الـ prompt ليصبح أكثر صرامة ===✨✨
     const prompt = `
     Analyze the following text and extract all multiple-choice questions.
     For each question, provide:
     1. The question number as a string (e.g., "1", "Q2", "٣"), if it exists.
     2. The full question text.
     3. A list of all possible options.
-    4. The index of the correct answer (starting from 0).
+    4. The index of the correct answer (starting from 0), *as explicitly found in the text*.
     5. The explanation for the answer, if one is provided in the text.
+
+    CRITICAL RULE: If the correct answer for a question is not *explicitly provided* in the source text (e.g., "Answer: C", "Correct: Paris", or the correct option is bolded/marked), *you MUST skip that question entirely* and not include it in the JSON array. Do not guess the answer based on your own knowledge.
+
     VERY IMPORTANT: Respond ONLY with a valid JSON array of objects. Each object should have these exact keys: "question", "options", "correctAnswerIndex", and optionally "questionNumber" and "explanation". The "questionNumber" key should only be present if a number is explicitly found next to the question in the source text. Do not include any text or markdown formatting outside the JSON array.
     Example Response Format:
     [
@@ -405,11 +409,6 @@ async function extractWithAI(text) {
         "question": "Which planet is known as the Red Planet?",
         "options": ["Earth", "Mars", "Jupiter", "Venus"],
         "correctAnswerIndex": 1
-      },
-      {
-        "question": "Which of these is not a primary color?",
-        "options": ["Red", "Blue", "Green", "Yellow"],
-        "correctAnswerIndex": 2
       }
     ]
     Here is the text to analyze:
@@ -466,7 +465,7 @@ async function extractWithAI(text) {
         console.error("Error calling or parsing Gemini API response:", error.response ? error.response.data : error.message);
         throw new Error("Failed to get a valid response from AI.");
     }
-          }
+}
 
 
 // (دالة extractWithRegex تبقى كما هي بدون تغيير)
