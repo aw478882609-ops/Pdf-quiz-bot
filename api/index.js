@@ -111,13 +111,14 @@ global.processingFiles.add(fileId);
                                 [{ text: 'إرسال لقناة/مجموعة 📢', callback_data: 'send_to_channel' }]
                             ]
                         };
-                        await bot.sendMessage(chatId, `✅ تم العثور على ${questions.length} سؤالًا.\n\nاختر أين وكيف تريد إرسالها:`, {
-                            reply_markup: keyboard
-                        });
+                        await bot.sendMessage(chatId, `✅ تم العثور على ${questions.length} سؤالًا.\n\nاختر أين وكيف تريد إرسالها:\n\n❗Bot Made by: <a href="https://t.me/A7MeDWaLiD0">A7MeD WaLiD</a>`, {
+  reply_markup: keyboard,
+  parse_mode: "HTML"
+});
                         adminNotificationStatus = 'نجاح ✅';
                         adminNotificationDetails = `تم العثور على ${questions.length} سؤال.`;
                     } else {
-                        await bot.sendMessage(chatId, '❌ لم أتمكن من العثور على أي أسئلة بصيغة صحيحة في الملف. تأكد أن النص داخل الملف قابل للنسخ وأنه يشبه إحدى الصيغ المدعومة في دليل المستخدم. للمساعدة اضغط /help');
+                        await bot.sendMessage(chatId, '❌ لم أتمكن من العثور على أي أسئلة بصيغة صحيحة في الملف. تأكد أن النص داخل الملف قابل للنسخ وان الملف يحتوي علي اجابات الاسئلة . للمساعدة اضغط /help');
                         adminNotificationStatus = 'نجاح (لكن فارغ) 🤷‍♂️';
                         adminNotificationDetails = 'تمت معالجة الملف لكن لم يتم العثور على أسئلة.';
                     }
