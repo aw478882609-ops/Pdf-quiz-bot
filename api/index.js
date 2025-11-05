@@ -1,4 +1,5 @@
 // ==== بداية كود Vercel الكامل والصحيح (api/index.js) ====
+// (مُعدل حسب طلبك: علامة مائية + Spoiler/Reply للاختبارات المنشأة فقط)
 
 const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
@@ -111,9 +112,15 @@ global.processingFiles.add(fileId);
                                 [{ text: 'إرسال لقناة/مجموعة 📢', callback_data: 'send_to_channel' }]
                             ]
                         };
-                        await bot.sendMessage(chatId, `✅ تم العثور على ${questions.length} سؤالًا.\n\nاختر أين وكيف تريد إرسالها:`, {
-                            reply_markup: keyboard
+
+                        // ✅✅✅ التعديل الأول: إضافة رابط المطور ✅✅✅
+                        await bot.sendMessage(chatId, `✅ تم العثور على ${questions.length} سؤالًا.\n\nاختر أين وكيف تريد إرسالها:\n\n❗Bot Made by: <a href="https://t.me/A7MeDWaLiD0">A7MeD WaLiD</a>`, {
+                            reply_markup: keyboard,
+                            parse_mode: "HTML", // تحديد الوضع ليعمل الرابط
+                            disable_web_page_preview: true // لمنع معاينة الرابط
                         });
+                        // ✅✅✅ نهاية التعديل الأول ✅✅✅
+
                         adminNotificationStatus = 'نجاح ✅';
                         adminNotificationDetails = `تم العثور على ${questions.length} سؤال.`;
                     } else {
@@ -157,7 +164,7 @@ else if (update.message && update.message.poll) {
     };
 
     if (message.forward_date) {
-        // ✨ التحسين الجديد: التحقق من وجود إجابة في الاختبار المعاد توجيهه
+        // ✨ (هذا الجزء يبقى كما هو في ملفك الأصلي حسب طلبك)
         if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
             // إذا كانت الإجابة موجودة، يتم تحويل الاختبار إلى نص مباشرة
             const formattedText = formatQuizText(quizData);
@@ -184,12 +191,17 @@ else if (update.message && update.message.poll) {
             userState[userId].pending_polls[interactiveMessage.message_id] = quizData;
         }
     } else {
-        // هذا الجزء يبقى كما هو للتعامل مع الاختبارات التي يتم إنشاؤها مباشرة
+        // ✅✅✅ التعديل الثاني والثالث (للاختبارات المنشأة فقط) ✅✅✅
         if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
-            const formattedText = formatQuizText(quizData);
-            await bot.sendMessage(chatId, formattedText);
+            const formattedText = formatQuizText(quizData, true); // <--- نمرر true لتفعيل الـ Spoiler
+            await bot.sendMessage(chatId, formattedText, {
+                reply_to_message_id: message.message_id, // الرد على الرسالة
+                parse_mode: 'HTML' // تفعيل الـ Spoiler
+            });
         } else {
-            await bot.sendMessage(chatId, "⚠️ هذا الاختبار لا يحتوي على إجابة صحيحة، لا يمكن تحويله تلقائيًا.");
+            await bot.sendMessage(chatId, "⚠️ هذا الاختبار لا يحتوي على إجابة صحيحة، لا يمكن تحويله تلقائيًا.", {
+                reply_to_message_id: message.message_id // الرد على الرسالة
+            });
         }
     }
     }
@@ -203,6 +215,7 @@ else if (update.message && update.message.poll) {
             const data = callbackQuery.data;
             const gasWebAppUrl = process.env.GAS_WEB_APP_URL;
 
+            // (هذا الجزء يبقى كما هو في ملفك الأصلي حسب طلبك)
             if (data.startsWith('poll_answer_')) {
                 if (!userState[userId] || !userState[userId].pending_polls || !userState[userId].pending_polls[messageId]) {
                     await bot.answerCallbackQuery(callbackQuery.id, { text: 'هذه الجلسة انتهت أو تمت معالجتها.', show_alert: true });
@@ -211,7 +224,7 @@ else if (update.message && update.message.poll) {
                 }
                 const poll_data = userState[userId].pending_polls[messageId];
                 poll_data.correctOptionId = parseInt(data.split('_')[2], 10);
-                const formattedText = formatQuizText(poll_data);
+                const formattedText = formatQuizText(poll_data); // <--- لا يستخدم Spoiler هنا
                 await bot.editMessageText(formattedText, {
                     chat_id: chatId,
                     message_id: messageId,
@@ -219,6 +232,7 @@ else if (update.message && update.message.poll) {
                 delete userState[userId].pending_polls[messageId];
                 await bot.answerCallbackQuery(callbackQuery.id);
             }
+            // (باقي كود الأزرار يبقى كما هو)
             else {
                 if (!userState[userId] || !userState[userId].questions) {
                     await bot.answerCallbackQuery(callbackQuery.id, { text: 'انتهت جلسة استخراج الملف، يرجى إرسال الملف مرة أخرى.', show_alert: true });
@@ -333,46 +347,29 @@ else if (update.message && update.message.poll) {
 // ✨✨ === قسم الدوال الخاصة باستخراج الأسئلة === ✨✨
 // =================================================================
 
-// =================================================================
-// ✨✨ === قسم الدوال الخاصة باستخراج الأسئلة (الجزء المُعدّل) === ✨✨
-// =================================================================
-
-/**
- * ✨✨ === الدالة المُعدّلة: تبدأ بالذكاء الاصطناعي أولاً === ✨✨
- * @param {string} text The text extracted from the PDF.
- * @returns {Promise<Array>} A promise that resolves to an array of question objects.
- */
+// ... (دالة extractQuestions و extractWithAI تبقى كما هي) ...
 async function extractQuestions(text) {
     let questions = [];
-
-    // لا نحاول استدعاء الذكاء الاصطناعي إذا كان النص قصيرًا جدًا
     if (text.trim().length > 50) {
         console.log("Attempting AI extraction first...");
         try {
-            // نبدأ بمحاولة الاستخراج عبر الـ AI
             questions = await extractWithAI(text);
         } catch (error) {
             console.error("AI extraction failed:", error.message);
-            // لا نرجع خطأ، بل نترك الفرصة للطريقة الثانية
             questions = []; 
         }
     }
-
-    // إذا فشل الذكاء الاصطناعي أو لم يجد شيئًا، نلجأ إلى طريقة Regex كخطة بديلة
     if (questions.length === 0) {
         console.log("AI method failed or found 0 questions. Falling back to Regex extraction...");
         try {
             questions = extractWithRegex(text);
         } catch (e) {
             console.error("Regex extraction also failed with an error:", e);
-            return []; // هنا فشلت كلتا الطريقتين
+            return [];
         }
     }
-
     return questions;
 }
-
-// (دالة extractWithAI المُعدّلة لتشمل الشرح وترقيم الأسئلة)
 async function extractWithAI(text) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
@@ -380,8 +377,6 @@ async function extractWithAI(text) {
         return [];
     }
     const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-    
-    // ✨✨=== التعديل هنا: تحديث الـ prompt ليطلب رقم السؤال ===✨✨
     const prompt = `
     Analyze the following text and extract all multiple-choice questions.
     For each question, provide:
@@ -417,45 +412,33 @@ async function extractWithAI(text) {
     ${text}
     ---
     `;
-
     const payload = {
         contents: [{
             parts: [{ text: prompt }]
         }]
     };
-
     try {
         const response = await axios.post(url, payload, {
             headers: { 'Content-Type': 'application/json' }
         });
-
         if (!response.data.candidates || response.data.candidates.length === 0 || !response.data.candidates[0].content) {
             console.error("AI responded but with no valid content or candidates.");
             return [];
         }
-
         const aiResponseText = response.data.candidates[0].content.parts[0].text;
-        // تنظيف الاستجابة من أي علامات إضافية قد يضعها النموذج
         const cleanedJsonString = aiResponseText.replace(/```json/g, '').replace(/```/g, '').trim();
         let parsedQuestions = JSON.parse(cleanedJsonString);
-        
-        // التحقق من أن الاستجابة هي مصفوفة وبها بيانات
         if (Array.isArray(parsedQuestions) && parsedQuestions.length > 0) {
-            // التحقق من أن كل عنصر يحتوي على الحقول الأساسية المطلوبة
             const areQuestionsValid = parsedQuestions.every(q => q.question && Array.isArray(q.options) && q.correctAnswerIndex !== undefined);
             if (areQuestionsValid) {
                 console.log(`AI successfully extracted ${parsedQuestions.length} questions.`);
-
-                // ✨✨=== التعديل الجديد: دمج رقم السؤال مع نص السؤال ===✨✨
                 parsedQuestions.forEach(q => {
                     if (q.questionNumber) {
                         q.question = `${q.questionNumber}) ${q.question}`;
-                        delete q.questionNumber; // حذف الخاصية بعد الدمج
+                        delete q.questionNumber;
                     }
                 });
-                
                 return parsedQuestions;
-
             } else {
                  console.error("AI response is an array, but some objects are missing required keys.");
                  return [];
@@ -466,18 +449,13 @@ async function extractWithAI(text) {
         console.error("Error calling or parsing Gemini API response:", error.response ? error.response.data : error.message);
         throw new Error("Failed to get a valid response from AI.");
     }
-          }
-
-
-// (دالة extractWithRegex تبقى كما هي بدون تغيير)
+}
 function extractWithRegex(text) {
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\f/g, '\n').replace(/\u2028|\u2029/g, '\n');
     text = text.replace(/\n{2,}/g, '\n');
-
     const lines = text.split('\n').map(l => l.trim());
     const questions = [];
     let i = 0;
-
     const questionPatterns = [/^(Q|Question|Problem|Quiz|السؤال)?\s*\d+[\s\.\)\]\-\ـ]/];
     const letterOptionPatterns = [
         /^\s*[\-\*]?\s*([A-Z])[\.\)\-:]\s*(.+)/i,
@@ -494,9 +472,7 @@ function extractWithRegex(text) {
     ];
     const optionPatterns = [...letterOptionPatterns, ...numberOptionPatterns, ...romanOptionPatterns];
     const answerPatterns = [/^\s*[\-\*]?\s*(Answer|Correct Answer|Solution|Ans|Sol)\s*[:\-\.,;\/]?\s*/i];
-
     function findMatch(line, patterns) { for (const pattern of patterns) { const match = line.match(pattern); if (match) return match; } return null; }
-
     function romanToNumber(roman) {
         const map = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
         let num = 0;
@@ -511,18 +487,15 @@ function extractWithRegex(text) {
         }
         return num;
     }
-    
     function validateOptionsSequence(optionLines) {
         if (optionLines.length < 2) return true;
         let style = null;
         let lastValue = null;
-
         for (let j = 0; j < optionLines.length; j++) {
             const line = optionLines[j];
             let currentStyle = null;
             let currentValue = null;
             let identifier = '';
-
             if (findMatch(line, numberOptionPatterns)) {
                 currentStyle = 'numbers';
                 identifier = findMatch(line, numberOptionPatterns)[1];
@@ -538,7 +511,6 @@ function extractWithRegex(text) {
             } else {
                 return false;
             }
-
             if (j === 0) {
                 style = currentStyle;
                 lastValue = currentValue;
@@ -551,34 +523,27 @@ function extractWithRegex(text) {
         }
         return true;
     }
-
     while (i < lines.length) {
         const line = lines[i];
         if (!line) { i++; continue; }
-
         const optionInFollowingLines = lines.slice(i + 1, i + 6).some(l => findMatch(l, optionPatterns));
         const isQuestionStart = findMatch(line, questionPatterns) || (optionInFollowingLines && !findMatch(line, optionPatterns) && !findMatch(line, answerPatterns));
         if (!isQuestionStart) { i++; continue; }
-
         let questionText = line;
         let potentialOptionsIndex = i + 1;
-
         let j = i + 1;
         while (j < lines.length && !findMatch(lines[j], optionPatterns) && !findMatch(lines[j], answerPatterns)) {
             questionText += ' ' + lines[j].trim();
             potentialOptionsIndex = j + 1;
             j++;
         }
-        
         if (potentialOptionsIndex < lines.length && findMatch(lines[potentialOptionsIndex], optionPatterns)) {
             const currentQuestion = { question: questionText.trim(), options: [], correctAnswerIndex: undefined };
             let k = potentialOptionsIndex;
             const optionLines = [];
-
             while (k < lines.length) {
                 const optLine = lines[k];
                 if (!optLine || findMatch(optLine, answerPatterns)) break;
-                
                 const optionMatch = findMatch(optLine, optionPatterns);
                 if (optionMatch) {
                     optionLines.push(optLine);
@@ -588,17 +553,13 @@ function extractWithRegex(text) {
                     break;
                 }
             }
-            
             if (!validateOptionsSequence(optionLines)) { i++; continue; }
-
             if (k < lines.length && findMatch(lines[k], answerPatterns)) {
                 const answerLine = lines[k];
                 let answerText = answerLine.replace(answerPatterns[0], '').trim();
                 let correctIndex = -1;
-                
                 const cleanAnswerText = answerText.replace(/^[A-Z\dIVXLCDM]+[\.\)]\s*/i, '').trim();
                 correctIndex = currentQuestion.options.findIndex(opt => opt.toLowerCase() === cleanAnswerText.toLowerCase());
-
                 if (correctIndex === -1) {
                     const identifierMatch = answerText.match(/^[A-Z\dIVXLCDM]+/i);
                     if (identifierMatch) {
@@ -619,7 +580,6 @@ function extractWithRegex(text) {
             } else {
                 i = k;
             }
-
             if (currentQuestion.options.length > 1 && currentQuestion.correctAnswerIndex !== undefined) {
                 questions.push(currentQuestion);
             }
@@ -628,25 +588,68 @@ function extractWithRegex(text) {
         }
     }
     return questions;
+}
+
+// ✅✅✅ التعديل الثاني (إضافة الدوال الداعمة للـ Spoiler) ✅✅✅
+
+/**
+ * دالة مساعدة لتأمين النص لعرضه كـ HTML
+ */
+function escapeHTML(str) {
+    if (!str) return '';
+    return str.replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;')
+              .replace(/'/g, '&#039;');
+}
+
+/**
+ * استبدال الدالة القديمة بهذه الدالة
+ * @param {object} quizData - بيانات الاختبار
+ * @param {boolean} useSpoiler - (اختياري) هل نستخدم Spoiler أم لا
+ */
+function formatQuizText(quizData, useSpoiler = false) {
+    // إذا كان الـ Spoiler مطلوباً، نستخدم HTML
+    if (useSpoiler) {
+        let formattedText = ` ${escapeHTML(quizData.question)}\n\n`;
+        const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+
+        const formattedOptions = quizData.options.map((optionText, optIndex) => {
+            return `${optionLetters[optIndex]}) ${escapeHTML(optionText)}`;
+        });
+        formattedText += formattedOptions.join('\n');
+
+        if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
+            const correctLetter = optionLetters[quizData.correctOptionId];
+            const correctText = escapeHTML(quizData.options[quizData.correctOptionId]);
+            formattedText += `\n\n<tg-spoiler>Answer: ${correctLetter}) ${correctText}</tg-spoiler>`;
+        }
+
+        if (quizData.explanation) {
+            formattedText += `\n<tg-spoiler>Explanation: ${escapeHTML(quizData.explanation)}</tg-spoiler>`;
+        }
+        return formattedText;
+    
+    } else {
+        // (السلوك القديم: نص عادي للاختبارات المحولة)
+        let formattedText = ` ${quizData.question}\n\n`;
+        const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+
+        const formattedOptions = quizData.options.map((optionText, optIndex) => {
+            return `${optionLetters[optIndex]}) ${optionText}`;
+        });
+        formattedText += formattedOptions.join('\n');
+
+        if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
+            const correctLetter = optionLetters[quizData.correctOptionId];
+            const correctText = quizData.options[quizData.correctOptionId];
+            formattedText += `\n\nAnswer: ${correctLetter}) ${correctText}`;
+        }
+
+        if (quizData.explanation) {
+            formattedText += `\nExplanation: ${quizData.explanation}`;
+        }
+        return formattedText;
     }
-
-function formatQuizText(quizData) {
-    let formattedText = ` ${quizData.question}\n\n`;
-    const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
-
-    const formattedOptions = quizData.options.map((optionText, optIndex) => {
-        return `${optionLetters[optIndex]}) ${optionText}`;
-    });
-    formattedText += formattedOptions.join('\n');
-
-    if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
-        const correctLetter = optionLetters[quizData.correctOptionId];
-        const correctText = quizData.options[quizData.correctOptionId];
-        formattedText += `\n\nAnswer: ${correctLetter}) ${correctText}`;
-    }
-
-    if (quizData.explanation) {
-        formattedText += `\nExplanation: ${quizData.explanation}`;
-    }
-    return formattedText;
 }
