@@ -1,4 +1,5 @@
 // ==== بداية كود Vercel الكامل والصحيح (api/index.js) ====
+// (يحتوي على حل منع التكرار + حل الرد والـ Spoiler)
 
 const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
@@ -137,11 +138,11 @@ global.processingFiles.add(fileId);
             if (adminNotificationStatus) {
                 await sendAdminNotification(adminNotificationStatus, user, fileId, adminNotificationDetails);
             }
-          // ✅ [مهم] إزالة الملف من الكاش بعد الانتهاء (سواء نجح أو فشل في الفحص الأولي)
+          // ✅ [مهم] إزالة الملف من الكاش بعد الانتهاء
           global.processingFiles.delete(fileId);
         }
 
-// 2️⃣ التعامل مع الاختبارات (Quizzes)
+// 2️⃣ التعامل مع الاختبارات (Quizzes) - (مُعدّل لدعم الـ Spoiler والرد)
 else if (update.message && update.message.poll) {
     const message = update.message;
     const poll = message.poll;
@@ -165,32 +166,35 @@ else if (update.message && update.message.poll) {
             // إذا كانت الإجابة موجودة، يتم تحويل الاختبار إلى نص مباشرة
             const formattedText = formatQuizText(quizData);
             await bot.sendMessage(chatId, formattedText, {
-                reply_to_message_id: message.message_id // للرد على الرسالة الأصلية
+                reply_to_message_id: message.message_id, // ✅ الرد على الرسالة
+                parse_mode: 'HTML' // ✅ لدعم الـ Spoiler
             });
         } else {
-            // إذا لم تكن الإجابة موجودة، نطلب من المستخدم تحديدها (السلوك القديم)
+            // إذا لم تكن الإجابة موجودة، نطلب من المستخدم تحديدها
             if (!userState[userId] || !userState[userId].pending_polls) {
                 userState[userId] = { pending_polls: {} };
             }
             const previewText = formatQuizText({ ...quizData, correctOptionId: null });
-            const promptText = `${previewText}\n\n*يرجى تحديد الإجابة الصحيحة لهذا الاختبار:*`;
+            const promptText = `${previewText}\n\n<b>يرجى تحديد الإجابة الصحيحة لهذا الاختبار:</b>`;
             const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
             const keyboardButtons = quizData.options.map((option, index) => ({
                 text: optionLetters[index] || (index + 1),
                 callback_data: `poll_answer_${index}`
             }));
             const interactiveMessage = await bot.sendMessage(chatId, promptText, {
-                parse_mode: 'Markdown',
-                reply_to_message_id: message.message_id,
+                parse_mode: 'HTML', // ✅ تغيير إلى HTML
+                reply_to_message_id: message.message_id, // ✅ الرد على الرسالة
                 reply_markup: { inline_keyboard: [keyboardButtons] }
             });
             userState[userId].pending_polls[interactiveMessage.message_id] = quizData;
         }
     } else {
-        // هذا الجزء يبقى كما هو للتعامل مع الاختبارات التي يتم إنشاؤها مباشرة
+        // هذا الجزء للتعامل مع الاختبارات التي يتم إنشاؤها مباشرة
         if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
             const formattedText = formatQuizText(quizData);
-            await bot.sendMessage(chatId, formattedText);
+            await bot.sendMessage(chatId, formattedText, {
+                 parse_mode: 'HTML' // ✅ لدعم الـ Spoiler
+            });
         } else {
             await bot.sendMessage(chatId, "⚠️ هذا الاختبار لا يحتوي على إجابة صحيحة، لا يمكن تحويله تلقائيًا.");
         }
@@ -218,6 +222,7 @@ else if (update.message && update.message.poll) {
                 await bot.editMessageText(formattedText, {
                     chat_id: chatId,
                     message_id: messageId,
+                    parse_mode: 'HTML' // ✅ إضافة لدعم الـ Spoiler
                 });
                 delete userState[userId].pending_polls[messageId];
                 await bot.answerCallbackQuery(callbackQuery.id);
@@ -664,23 +669,45 @@ function extractWithRegex(text) {
     return questions;
     }
 
+/**
+ * (دالة مُضافة لدعم الـ Spoiler)
+ * دالة مساعدة لتأمين النص لعرضه كـ HTML
+ */
+function escapeHTML(str) {
+    if (!str) return '';
+    return str.replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;')
+              .replace(/'/g, '&#039;');
+}
+
+/**
+ * (دالة مُعدّلة لدعم الـ Spoiler)
+ */
 function formatQuizText(quizData) {
-    let formattedText = ` ${quizData.question}\n\n`;
+    // نستخدم escapeHTML لضمان عدم تضارب نص السؤال مع تنسيق HTML
+    let formattedText = ` ${escapeHTML(quizData.question)}\n\n`;
     const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
 
     const formattedOptions = quizData.options.map((optionText, optIndex) => {
-        return `${optionLetters[optIndex]}) ${optionText}`;
+        // نستخدم escapeHTML لكل خيار أيضاً
+        return `${optionLetters[optIndex]}) ${escapeHTML(optionText)}`;
     });
     formattedText += formattedOptions.join('\n');
 
     if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
         const correctLetter = optionLetters[quizData.correctOptionId];
-        const correctText = quizData.options[quizData.correctOptionId];
-        formattedText += `\n\nAnswer: ${correctLetter}) ${correctText}`;
+        // نستخدم escapeHTML للإجابة
+        const correctText = escapeHTML(quizData.options[quizData.correctOptionId]);
+        
+        // ✨ التعديل الأساسي هنا: إضافة <tg-spoiler>
+        formattedText += `\n\n<tg-spoiler>Answer: ${correctLetter}) ${correctText}</tg-spoiler>`;
     }
 
     if (quizData.explanation) {
-        formattedText += `\nExplanation: ${quizData.explanation}`;
+        // ✨ التعديل الأساسي هنا: إضافة <tg-spoiler>
+        formattedText += `\n<tg-spoiler>Explanation: ${escapeHTML(quizData.explanation)}</tg-spoiler>`;
     }
     return formattedText;
 }
