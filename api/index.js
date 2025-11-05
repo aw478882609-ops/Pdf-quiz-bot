@@ -128,6 +128,7 @@ global.processingFiles.add(fileId);
                     await bot.sendMessage(chatId, '⚠️ حدث خطأ أثناء معالجة الملف. يرجى التأكد من أن الملف سليم وغير تالف وتأكد أنه بصيغة pdf. للمساعدة اضغط /help');
                     adminNotificationStatus = 'فشل ❌';
                     adminNotificationDetails = `السبب: ${error.message}`;
+                  // ❗ [مهم] إزالة الملف من الكاش عند الفشل
                   global.processingFiles.delete(fileId);
                 }
             }
@@ -136,8 +137,8 @@ global.processingFiles.add(fileId);
             if (adminNotificationStatus) {
                 await sendAdminNotification(adminNotificationStatus, user, fileId, adminNotificationDetails);
             }
-          // ✅ إزالة الملف من الكاش بعد الانتهاء
-global.processingFiles.delete(fileId);
+          // ✅ [مهم] إزالة الملف من الكاش بعد الانتهاء (سواء نجح أو فشل في الفحص الأولي)
+          global.processingFiles.delete(fileId);
         }
 
 // 2️⃣ التعامل مع الاختبارات (Quizzes)
