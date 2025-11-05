@@ -197,18 +197,19 @@ else if (update.message && update.message.poll) {
         }
     } else {
         // هذا الجزء يبقى كما هو للتعامل مع الاختبارات التي يتم إنشاؤها مباشرة
-        if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
+      if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
             const formattedText = formatQuizText(quizData);
-            
-            // ✅✅✅ التعديل الثاني (جزء ج): إضافة parse_mode: 'HTML' ✅✅✅
             await bot.sendMessage(chatId, formattedText, {
-                parse_mode: 'HTML' // لتفعيل الـ Spoiler
+                 parse_mode: 'HTML',
+                 reply_to_message_id: message.message_id // ✅ الإضافة المطلوبة هنا
             });
         } else {
-            await bot.sendMessage(chatId, "⚠️ هذا الاختبار لا يحتوي على إجابة صحيحة، لا يمكن تحويله تلقائيًا.");
+            await bot.sendMessage(chatId, "⚠️ هذا الاختبار لا يحتوي على إجابة صحيحة، لا يمكن تحويله تلقائيًا.", {
+                reply_to_message_id: message.message_id // ✅ الإضافة المطلوبة هنا
+            });
         }
     }
-    }
+}
 
         // 3️⃣ التعامل مع الضغط على الأزرار (Callback Query)
         else if (update.callback_query) {
