@@ -1,5 +1,4 @@
 // ==== بداية كود Vercel الكامل والصحيح (api/index.js) ====
-// (مُعدل بناءً على طلبك)
 
 const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
@@ -112,15 +111,9 @@ global.processingFiles.add(fileId);
                                 [{ text: 'إرسال لقناة/مجموعة 📢', callback_data: 'send_to_channel' }]
                             ]
                         };
-                        
-                        // ✅✅✅ التعديل الأول: إضافة رابط المطور ✅✅✅
-                        await bot.sendMessage(chatId, `✅ تم العثور على ${questions.length} سؤالًا.\n\nاختر أين وكيف تريد إرسالها:\n\n❗Bot Made by: <a href="https://t.me/A7MeDWaLiD0">A7MeD WaLiD</a>`, {
-                            reply_markup: keyboard,
-                            parse_mode: "HTML", // تحديد الوضع ليعمل الرابط
-                            disable_web_page_preview: true // لمنع معاينة الرابط
+                        await bot.sendMessage(chatId, `✅ تم العثور على ${questions.length} سؤالًا.\n\nاختر أين وكيف تريد إرسالها:`, {
+                            reply_markup: keyboard
                         });
-                        // ✅✅✅ نهاية التعديل الأول ✅✅✅
-
                         adminNotificationStatus = 'نجاح ✅';
                         adminNotificationDetails = `تم العثور على ${questions.length} سؤال.`;
                     } else {
@@ -145,7 +138,7 @@ global.processingFiles.add(fileId);
 global.processingFiles.delete(fileId);
         }
 
-// 2️⃣ التعامل مع الاختبارات (Quizzes) - (مُعدل لدعم الـ Spoiler والرد)
+// 2️⃣ التعامل مع الاختبارات (Quizzes)
 else if (update.message && update.message.poll) {
     const message = update.message;
     const poll = message.poll;
@@ -168,11 +161,8 @@ else if (update.message && update.message.poll) {
         if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
             // إذا كانت الإجابة موجودة، يتم تحويل الاختبار إلى نص مباشرة
             const formattedText = formatQuizText(quizData);
-            
-            // ✅✅✅ التعديل الثاني (جزء أ): إضافة parse_mode: 'HTML' ✅✅✅
             await bot.sendMessage(chatId, formattedText, {
-                reply_to_message_id: message.message_id, // للرد على الرسالة الأصلية
-                parse_mode: 'HTML' // لتفعيل الـ Spoiler
+                reply_to_message_id: message.message_id // للرد على الرسالة الأصلية
             });
         } else {
             // إذا لم تكن الإجابة موجودة، نطلب من المستخدم تحديدها (السلوك القديم)
@@ -180,16 +170,14 @@ else if (update.message && update.message.poll) {
                 userState[userId] = { pending_polls: {} };
             }
             const previewText = formatQuizText({ ...quizData, correctOptionId: null });
-            
-            // ✅✅✅ التعديل الثاني (جزء ب): استخدام HTML بدلاً من Markdown ✅✅✅
-            const promptText = `${previewText}\n\n<b>يرجى تحديد الإجابة الصحيحة لهذا الاختبار:</b>`; // استخدام <b>
+            const promptText = `${previewText}\n\n*يرجى تحديد الإجابة الصحيحة لهذا الاختبار:*`;
             const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
             const keyboardButtons = quizData.options.map((option, index) => ({
                 text: optionLetters[index] || (index + 1),
                 callback_data: `poll_answer_${index}`
             }));
             const interactiveMessage = await bot.sendMessage(chatId, promptText, {
-                parse_mode: 'HTML', // تغيير إلى HTML
+                parse_mode: 'Markdown',
                 reply_to_message_id: message.message_id,
                 reply_markup: { inline_keyboard: [keyboardButtons] }
             });
@@ -197,19 +185,14 @@ else if (update.message && update.message.poll) {
         }
     } else {
         // هذا الجزء يبقى كما هو للتعامل مع الاختبارات التي يتم إنشاؤها مباشرة
-      if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
+        if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
             const formattedText = formatQuizText(quizData);
-            await bot.sendMessage(chatId, formattedText, {
-                 parse_mode: 'HTML',
-                 reply_to_message_id: message.message_id // ✅ الإضافة المطلوبة هنا
-            });
+            await bot.sendMessage(chatId, formattedText);
         } else {
-            await bot.sendMessage(chatId, "⚠️ هذا الاختبار لا يحتوي على إجابة صحيحة، لا يمكن تحويله تلقائيًا.", {
-                reply_to_message_id: message.message_id // ✅ الإضافة المطلوبة هنا
-            });
+            await bot.sendMessage(chatId, "⚠️ هذا الاختبار لا يحتوي على إجابة صحيحة، لا يمكن تحويله تلقائيًا.");
         }
     }
-}
+    }
 
         // 3️⃣ التعامل مع الضغط على الأزرار (Callback Query)
         else if (update.callback_query) {
@@ -229,12 +212,9 @@ else if (update.message && update.message.poll) {
                 const poll_data = userState[userId].pending_polls[messageId];
                 poll_data.correctOptionId = parseInt(data.split('_')[2], 10);
                 const formattedText = formatQuizText(poll_data);
-                
-                // ✅✅✅ التعديل الثاني (جزء د): إضافة parse_mode: 'HTML' ✅✅✅
                 await bot.editMessageText(formattedText, {
                     chat_id: chatId,
                     message_id: messageId,
-                    parse_mode: 'HTML' // لتفعيل الـ Spoiler عند تعديل الرسالة
                 });
                 delete userState[userId].pending_polls[messageId];
                 await bot.answerCallbackQuery(callbackQuery.id);
@@ -650,47 +630,23 @@ function extractWithRegex(text) {
     return questions;
     }
 
-// ✅✅✅ التعديل الثاني (جزء هـ): إضافة دالة escapeHTML ودالة formatQuizText المُعدّلة ✅✅✅
-
-/**
- * دالة مساعدة لتأمين النص لعرضه كـ HTML
- */
-function escapeHTML(str) {
-    if (!str) return '';
-    return str.replace(/&/g, '&amp;')
-              .replace(/</g, '&lt;')
-              .replace(/>/g, '&gt;')
-              .replace(/"/g, '&quot;')
-              .replace(/'/g, '&#039;');
-}
-
-/**
- * دالة مُعدّلة لدعم الـ Spoiler
- */
 function formatQuizText(quizData) {
-    // نستخدم escapeHTML لضمان عدم تضارب نص السؤال مع تنسيق HTML
-    let formattedText = ` ${escapeHTML(quizData.question)}\n\n`;
+    let formattedText = ` ${quizData.question}\n\n`;
     const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
 
     const formattedOptions = quizData.options.map((optionText, optIndex) => {
-        // نستخدم escapeHTML لكل خيار أيضاً
-        return `${optionLetters[optIndex]}) ${escapeHTML(optionText)}`;
+        return `${optionLetters[optIndex]}) ${optionText}`;
     });
     formattedText += formattedOptions.join('\n');
 
     if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
         const correctLetter = optionLetters[quizData.correctOptionId];
-        // نستخدم escapeHTML للإجابة
-        const correctText = escapeHTML(quizData.options[quizData.correctOptionId]);
-        
-        // ✨ التعديل الأساسي هنا: إضافة <tg-spoiler>
-        formattedText += `\n\n<tg-spoiler>Answer: ${correctLetter}) ${correctText}</tg-spoiler>`;
+        const correctText = quizData.options[quizData.correctOptionId];
+        formattedText += `\n\nAnswer: ${correctLetter}) ${correctText}`;
     }
 
     if (quizData.explanation) {
-        // ✨ التعديل الأساسي هنا: إضافة <tg-spoiler>
-        formattedText += `\n<tg-spoiler>Explanation: ${escapeHTML(quizData.explanation)}</tg-spoiler>`;
+        formattedText += `\nExplanation: ${quizData.explanation}`;
     }
     return formattedText;
 }
-// ✅✅✅ نهاية التعديل الثاني ✅✅✅
