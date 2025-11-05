@@ -1,5 +1,5 @@
 // ==== بداية كود Vercel الكامل والصحيح (api/index.js) ====
-// (يحتوي على حل منع التكرار + حل الرد والـ Spoiler)
+// (الحل النهائي: إرسال رد فوري لتيليجرام + قفل الذاكرة + ميزة Spoiler)
 
 const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
@@ -50,12 +50,65 @@ async function sendAdminNotification(status, user, fileId, details = '') {
     console.error("Failed to send document notification to admin:", error.message);
   }
 }
+
+// =================================================================
+// ✨✨ === بداية الدوال المساعدة (Spoiler) === ✨✨
+// =================================================================
+
+/**
+ * (دالة مُضافة لدعم الـ Spoiler)
+ * دالة مساعدة لتأمين النص لعرضه كـ HTML
+ */
+function escapeHTML(str) {
+    if (!str) return '';
+    return str.replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;')
+              .replace(/'/g, '&#039;');
+}
+
+/**
+ * (دالة مُعدّلة لدعم الـ Spoiler)
+ */
+function formatQuizText(quizData) {
+    let formattedText = ` ${escapeHTML(quizData.question)}\n\n`;
+    const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+    const formattedOptions = quizData.options.map((optionText, optIndex) => {
+        return `${optionLetters[optIndex]}) ${escapeHTML(optionText)}`;
+    });
+    formattedText += formattedOptions.join('\n');
+    if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
+        const correctLetter = optionLetters[quizData.correctOptionId];
+        const correctText = escapeHTML(quizData.options[quizData.correctOptionId]);
+        formattedText += `\n\n<tg-spoiler>Answer: ${correctLetter}) ${correctText}</tg-spoiler>`;
+    }
+    if (quizData.explanation) {
+        formattedText += `\n<tg-spoiler>Explanation: ${escapeHTML(quizData.explanation)}</tg-spoiler>`;
+    }
+    return formattedText;
+}
+
+// =================================================================
+// ✨✨ === نهاية الدوال المساعدة (Spoiler) === ✨✨
+// =================================================================
+
+
 // وحدة التعامل مع الطلبات (النسخة النهائية والمصححة)
 module.exports = async (req, res) => {
+    
+    // التحقق من نوع الطلب
+    if (req.method !== 'POST') {
+        return res.status(405).send('Method Not Allowed');
+    }
+
+    // ✅✅✅ التعديل الأهم: إيقاف حلقة التكرار (Timeout Loop) ✅✅✅
+    // أرسل "OK" لتيليجرام فوراً لإخباره أننا استلمنا الطلب
+    // هذا يمنع تيليجرام من إعادة إرسال التحديث إذا استغرقت المعالجة وقتاً طويلاً
+    res.status(200).send('OK');
+
+    // الآن، تتم المعالجة الفعلية في الخلفية
     try {
-        if (req.method !== 'POST') {
-            return res.status(405).send('Method Not Allowed');
-        }
         const body = await micro.json(req);
         const update = body;
 
@@ -66,140 +119,135 @@ module.exports = async (req, res) => {
             const user = message.from;
             const fileId = message.document.file_id;
 
-// 🧠 كاش لمنع التحليل المكرر
-if (!global.processingFiles) global.processingFiles = new Set();
+            // 🧠 كاش لمنع التحليل المكرر (القفل المؤقت)
+            if (!global.processingFiles) global.processingFiles = new Set();
+            if (global.processingFiles.has(fileId)) {
+              console.log(`⏳ الملف ${fileId} جاري تحليله بالفعل — تم تجاهل الطلب.`);
+              return; // الخروج بهدوء (لأننا أرسلنا 200 OK بالفعل)
+            }
+            global.processingFiles.add(fileId);
+            // نهاية كود القفل
 
-// لو الملف جاري تحليله بالفعل → تجاهل الطلب
-if (global.processingFiles.has(fileId)) {
-  console.log(`⏳ الملف ${fileId} جاري تحليله بالفعل — تم تجاهل الطلب.`);
-  await bot.sendMessage(chatId, '⚙️ الملف ما زال قيد التحليل، يرجى الانتظار لحين الانتهاء...');
-  return res.status(200).send('Duplicate processing ignored.');
-}
-
-// علّم إن الملف جاري تحليله الآن
-global.processingFiles.add(fileId);
 
             // متغيرات لتخزين الحالة النهائية للإشعار
             let adminNotificationStatus = '';
             let adminNotificationDetails = '';
 
-            const VERCEL_LIMIT_BYTES = 10 * 1024 * 1024;
-            if (message.document.file_size > VERCEL_LIMIT_BYTES) {
-                await bot.sendMessage(chatId, `⚠️ عذرًا، حجم الملف يتجاوز الحد المسموح به (${'10 MB'}).`);
-                adminNotificationStatus = 'ملف مرفوض 🐘';
-                adminNotificationDetails = 'السبب: حجم الملف أكبر من 10 ميجا.';
-            } else if (message.document.mime_type !== 'application/pdf') {
-                await bot.sendMessage(chatId, '⚠️ يرجى إرسال ملف بصيغة PDF فقط.');
-                adminNotificationStatus = 'ملف مرفوض 📄';
-                adminNotificationDetails = `السبب: نوع الملف ليس PDF (النوع المرسل: ${message.document.mime_type}).`;
-            } else {
-                await bot.sendMessage(chatId, '📑 استلمت الملف، جاري تحليله واستخراج الأسئلة...');
-                try {
-                    const fileLink = await bot.getFileLink(fileId);
-                    const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
-                    const dataBuffer = Buffer.from(response.data);
-                    const pdfData = await pdf(dataBuffer);
+            // نضع كل شيء في try...finally لضمان فك القفل
+            try {
+                const VERCEL_LIMIT_BYTES = 10 * 1024 * 1024;
+                if (message.document.file_size > VERCEL_LIMIT_BYTES) {
+                    await bot.sendMessage(chatId, `⚠️ عذرًا، حجم الملف يتجاوز الحد المسموح به (${'10 MB'}).`);
+                    adminNotificationStatus = 'ملف مرفوض 🐘';
+                    adminNotificationDetails = 'السبب: حجم الملف أكبر من 10 ميجا.';
+                } else if (message.document.mime_type !== 'application/pdf') {
+                    await bot.sendMessage(chatId, '⚠️ يرجى إرسال ملف بصيغة PDF فقط.');
+                    adminNotificationStatus = 'ملف مرفوض 📄';
+                    adminNotificationDetails = `السبب: نوع الملف ليس PDF (النوع المرسل: ${message.document.mime_type}).`;
+                } else {
+                    await bot.sendMessage(chatId, '📑 استلمت الملف، جاري تحليله واستخراج الأسئلة...');
+                    try {
+                        const fileLink = await bot.getFileLink(fileId);
+                        const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
+                        const dataBuffer = Buffer.from(response.data);
+                        const pdfData = await pdf(dataBuffer);
 
-                    const questions = await extractQuestions(pdfData.text);
+                        const questions = await extractQuestions(pdfData.text);
 
-                    if (questions.length > 0) {
-                        userState[user.id] = { questions: questions };
-                        // إضافة زر "إرسال وإغلاق"
-                        const keyboard = {
-                            inline_keyboard: [
-                                [{ text: 'إرسال هنا 📤', callback_data: 'send_here' }],
-                                [{ text: 'إرسال وإغلاق هنا 🔒', callback_data: 'send_and_close_here'}],
-                                [{ text: 'إرسال لقناة/مجموعة 📢', callback_data: 'send_to_channel' }]
-                            ]
-                        };
-                       await bot.sendMessage(chatId, `✅ تم العثور على ${questions.length} سؤالًا.\n\nاختر أين وكيف تريد إرسالها:\n\n❗Bot Made by: <a href="https://t.me/A7MeDWaLiD0">A7MeD WaLiD</a>`, {
-  reply_markup: keyboard,
-  parse_mode: "HTML",
-  disable_web_page_preview: true
-});
-                        adminNotificationStatus = 'نجاح ✅';
-                        adminNotificationDetails = `تم العثور على ${questions.length} سؤال.`;
-                    } else {
-                        await bot.sendMessage(chatId, '❌ لم أتمكن من العثور على أي أسئلة بصيغة صحيحة في الملف. تأكد أن النص داخل الملف قابل للنسخ وان الملف يحتوي علي اجابات الاسئلة . للمساعدة اضغط /help');
-                        adminNotificationStatus = 'نجاح (لكن فارغ) 🤷‍♂️';
-                        adminNotificationDetails = 'تمت معالجة الملف لكن لم يتم العثور على أسئلة.';
+                        if (questions.length > 0) {
+                            userState[user.id] = { questions: questions };
+                            const keyboard = {
+                                inline_keyboard: [
+                                    [{ text: 'إرسال هنا 📤', callback_data: 'send_here' }],
+                                    [{ text: 'إرسال وإغلاق هنا 🔒', callback_data: 'send_and_close_here'}],
+                                    [{ text: 'إرسال لقناة/مجموعة 📢', callback_data: 'send_to_channel' }]
+                                ]
+                            };
+                           await bot.sendMessage(chatId, `✅ تم العثور على ${questions.length} سؤالًا.\n\nاختر أين وكيف تريد إرسالها:\n\n❗Bot Made by: <a href="https://t.me/A7MeDWaLiD0">A7MeD WaLiD</a>`, {
+                                reply_markup: keyboard,
+                                parse_mode: "HTML",
+                                disable_web_page_preview: true
+                           });
+                            adminNotificationStatus = 'نجاح ✅';
+                            adminNotificationDetails = `تم العثور على ${questions.length} سؤال.`;
+                        } else {
+                            await bot.sendMessage(chatId, '❌ لم أتمكن من العثور على أي أسئلة بصيغة صحيحة في الملف. تأكد أن النص داخل الملف قابل للنسخ وان الملف يحتوي علي اجابات الاسئلة . للمساعدة اضغط /help');
+                            adminNotificationStatus = 'نجاح (لكن فارغ) 🤷‍♂️';
+                            adminNotificationDetails = 'تمت معالجة الملف لكن لم يتم العثور على أسئلة.';
+                        }
+                    } catch (error) {
+                        console.error("Error processing PDF:", error);
+                        await bot.sendMessage(chatId, '⚠️ حدث خطأ أثناء معالجة الملف. يرجى التأكد من أن الملف سليم وغير تالف وتأكد أنه بصيغة pdf. للمساعدة اضغط /help');
+                        adminNotificationStatus = 'فشل ❌';
+                        adminNotificationDetails = `السبب: ${error.message}`;
                     }
-                } catch (error) {
-                    console.error("Error processing PDF:", error);
-                    await bot.sendMessage(chatId, '⚠️ حدث خطأ أثناء معالجة الملف. يرجى التأكد من أن الملف سليم وغير تالف وتأكد أنه بصيغة pdf. للمساعدة اضغط /help');
-                    adminNotificationStatus = 'فشل ❌';
-                    adminNotificationDetails = `السبب: ${error.message}`;
-                  // ❗ [مهم] إزالة الملف من الكاش عند الفشل
-                  global.processingFiles.delete(fileId);
+                }
+                
+                // إرسال الإشعار المجمع في النهاية
+                if (adminNotificationStatus) {
+                    await sendAdminNotification(adminNotificationStatus, user, fileId, adminNotificationDetails);
+                }
+
+            } finally {
+                // ✅✅✅ [مهم جداً] فك القفل دائماً ✅✅✅
+                global.processingFiles.delete(fileId);
+            }
+        }
+
+        // 2️⃣ التعامل مع الاختبارات (Quizzes) - (مُعدّل لدعم الـ Spoiler والرد)
+        else if (update.message && update.message.poll) {
+            const message = update.message;
+            const poll = message.poll;
+
+            if (poll.type !== 'quiz') {
+                return; // خروج هادئ
+            }
+
+            const chatId = message.chat.id;
+            const userId = message.from.id;
+            const quizData = {
+                question: poll.question,
+                options: poll.options.map(opt => opt.text),
+                correctOptionId: poll.correct_option_id,
+                explanation: poll.explanation || null
+            };
+
+            if (message.forward_date) {
+                if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
+                    const formattedText = formatQuizText(quizData);
+                    await bot.sendMessage(chatId, formattedText, {
+                        reply_to_message_id: message.message_id,
+                        parse_mode: 'HTML'
+                    });
+                } else {
+                    if (!userState[userId] || !userState[userId].pending_polls) {
+                        userState[userId] = { pending_polls: {} };
+                    }
+                    const previewText = formatQuizText({ ...quizData, correctOptionId: null });
+                    const promptText = `${previewText}\n\n<b>يرجى تحديد الإجابة الصحيحة لهذا الاختبار:</b>`;
+                    const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+                    const keyboardButtons = quizData.options.map((option, index) => ({
+                        text: optionLetters[index] || (index + 1),
+                        callback_data: `poll_answer_${index}`
+                    }));
+                    const interactiveMessage = await bot.sendMessage(chatId, promptText, {
+                        parse_mode: 'HTML',
+                        reply_to_message_id: message.message_id,
+                        reply_markup: { inline_keyboard: [keyboardButtons] }
+                    });
+                    userState[userId].pending_polls[interactiveMessage.message_id] = quizData;
+                }
+            } else {
+                if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
+                    const formattedText = formatQuizText(quizData);
+                    await bot.sendMessage(chatId, formattedText, {
+                         parse_mode: 'HTML'
+                    });
+                } else {
+                    await bot.sendMessage(chatId, "⚠️ هذا الاختبار لا يحتوي على إجابة صحيحة، لا يمكن تحويله تلقائيًا.");
                 }
             }
-
-            // إرسال الإشعار المجمع في النهاية
-            if (adminNotificationStatus) {
-                await sendAdminNotification(adminNotificationStatus, user, fileId, adminNotificationDetails);
-            }
-          // ✅ [مهم] إزالة الملف من الكاش بعد الانتهاء
-          global.processingFiles.delete(fileId);
         }
-
-// 2️⃣ التعامل مع الاختبارات (Quizzes) - (مُعدّل لدعم الـ Spoiler والرد)
-else if (update.message && update.message.poll) {
-    const message = update.message;
-    const poll = message.poll;
-
-    if (poll.type !== 'quiz') {
-        return res.status(200).send('OK');
-    }
-
-    const chatId = message.chat.id;
-    const userId = message.from.id;
-    const quizData = {
-        question: poll.question,
-        options: poll.options.map(opt => opt.text),
-        correctOptionId: poll.correct_option_id,
-        explanation: poll.explanation || null
-    };
-
-    if (message.forward_date) {
-        // ✨ التحسين الجديد: التحقق من وجود إجابة في الاختبار المعاد توجيهه
-        if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
-            // إذا كانت الإجابة موجودة، يتم تحويل الاختبار إلى نص مباشرة
-            const formattedText = formatQuizText(quizData);
-            await bot.sendMessage(chatId, formattedText, {
-                reply_to_message_id: message.message_id, // ✅ الرد على الرسالة
-                parse_mode: 'HTML' // ✅ لدعم الـ Spoiler
-            });
-        } else {
-            // إذا لم تكن الإجابة موجودة، نطلب من المستخدم تحديدها
-            if (!userState[userId] || !userState[userId].pending_polls) {
-                userState[userId] = { pending_polls: {} };
-            }
-            const previewText = formatQuizText({ ...quizData, correctOptionId: null });
-            const promptText = `${previewText}\n\n<b>يرجى تحديد الإجابة الصحيحة لهذا الاختبار:</b>`;
-            const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
-            const keyboardButtons = quizData.options.map((option, index) => ({
-                text: optionLetters[index] || (index + 1),
-                callback_data: `poll_answer_${index}`
-            }));
-            const interactiveMessage = await bot.sendMessage(chatId, promptText, {
-                parse_mode: 'HTML', // ✅ تغيير إلى HTML
-                reply_to_message_id: message.message_id, // ✅ الرد على الرسالة
-                reply_markup: { inline_keyboard: [keyboardButtons] }
-            });
-            userState[userId].pending_polls[interactiveMessage.message_id] = quizData;
-        }
-    } else {
-        // هذا الجزء للتعامل مع الاختبارات التي يتم إنشاؤها مباشرة
-        if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
-            const formattedText = formatQuizText(quizData);
-            await bot.sendMessage(chatId, formattedText, {
-                 parse_mode: 'HTML' // ✅ لدعم الـ Spoiler
-            });
-        } else {
-            await bot.sendMessage(chatId, "⚠️ هذا الاختبار لا يحتوي على إجابة صحيحة، لا يمكن تحويله تلقائيًا.");
-        }
-    }
-    }
 
         // 3️⃣ التعامل مع الضغط على الأزرار (Callback Query)
         else if (update.callback_query) {
@@ -214,7 +262,7 @@ else if (update.message && update.message.poll) {
                 if (!userState[userId] || !userState[userId].pending_polls || !userState[userId].pending_polls[messageId]) {
                     await bot.answerCallbackQuery(callbackQuery.id, { text: 'هذه الجلسة انتهت أو تمت معالجتها.', show_alert: true });
                     await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
-                    return res.status(200).send('OK');
+                    return; // خروج هادئ
                 }
                 const poll_data = userState[userId].pending_polls[messageId];
                 poll_data.correctOptionId = parseInt(data.split('_')[2], 10);
@@ -222,7 +270,7 @@ else if (update.message && update.message.poll) {
                 await bot.editMessageText(formattedText, {
                     chat_id: chatId,
                     message_id: messageId,
-                    parse_mode: 'HTML' // ✅ إضافة لدعم الـ Spoiler
+                    parse_mode: 'HTML'
                 });
                 delete userState[userId].pending_polls[messageId];
                 await bot.answerCallbackQuery(callbackQuery.id);
@@ -231,11 +279,11 @@ else if (update.message && update.message.poll) {
                 if (!userState[userId] || !userState[userId].questions) {
                     await bot.answerCallbackQuery(callbackQuery.id, { text: 'انتهت جلسة استخراج الملف، يرجى إرسال الملف مرة أخرى.', show_alert: true });
                     await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
-                    return res.status(200).send('OK');
+                    return; // خروج هادئ
                 }
                 if (!gasWebAppUrl) {
                     await bot.editMessageText('⚠️ خطأ في الإعدادات: رابط خدمة الإرسال الخارجية غير موجود.', { chat_id: chatId, message_id: messageId });
-                    return res.status(200).send('OK');
+                    return; // خروج هادئ
                 }
                 
                 if (data === 'send_here' || data === 'send_and_close_here') {
@@ -331,18 +379,16 @@ else if (update.message && update.message.poll) {
             }
         }
     } catch (error) {
-        console.error("General error:", error);
+        // إذا حدث خطأ أثناء قراءة JSON الأساسي (نادر جداً)
+        console.error("General error processing update:", error);
     }
-    res.status(200).send('OK');
+    
+    // تم نقل السطر res.status(200).send('OK') إلى الأعلى
 };
 
 
 // =================================================================
 // ✨✨ === قسم الدوال الخاصة باستخراج الأسئلة === ✨✨
-// =================================================================
-
-// =================================================================
-// ✨✨ === قسم الدوال الخاصة باستخراج الأسئلة (الجزء المُعدّل) === ✨✨
 // =================================================================
 
 /**
@@ -380,9 +426,7 @@ async function extractQuestions(text) {
     return questions;
 }
 
-// (دالة extractWithAI المُعدّلة لتشمل الشرح وترقيم الأسئلة)
-// (دالة extractWithAI المُعدّلة لتشمل الشرح وترقيم الأسئلة)
-// (دالة extractWithAI المُعدّلة لتشمل الشرح وترقيم الأسئلة)
+// (دالة extractWithAI - تم إعادتها للشكل الأصلي حسب طلبك)
 async function extractWithAI(text) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
@@ -391,7 +435,7 @@ async function extractWithAI(text) {
     }
     const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
     
-    // ✨✨=== التعديل هنا: إضافة "قاعدة صارمة" ومثال سلبي للـ prompt الأصلي ===✨✨
+    // (هذا هو الـ Prompt الأصلي الذي كان في ملفك)
     const prompt = `
     Analyze the following text and extract all multiple-choice questions.
     For each question, provide:
@@ -474,7 +518,8 @@ async function extractWithAI(text) {
         }
 
         const aiResponseText = response.data.candidates[0].content.parts[0].text;
-        // تنظيف الاستجابة من أي علامات إضافية قد يضعها النموذج
+        
+        // (هذه هي طريقة معالجة JSON الأصلية التي كانت في ملفك)
         const cleanedJsonString = aiResponseText.replace(/```json/g, '').replace(/```/g, '').trim();
         let parsedQuestions = JSON.parse(cleanedJsonString);
         
@@ -502,10 +547,11 @@ async function extractWithAI(text) {
         }
         return [];
     } catch (error) {
+        // هذا السطر سيلتقط خطأ JSON الذي ظهر في اللوج
         console.error("Error calling or parsing Gemini API response:", error.response ? error.response.data : error.message);
         throw new Error("Failed to get a valid response from AI.");
     }
-          }
+}
 
 
 // (دالة extractWithRegex تبقى كما هي بدون تغيير)
@@ -667,47 +713,4 @@ function extractWithRegex(text) {
         }
     }
     return questions;
-    }
-
-/**
- * (دالة مُضافة لدعم الـ Spoiler)
- * دالة مساعدة لتأمين النص لعرضه كـ HTML
- */
-function escapeHTML(str) {
-    if (!str) return '';
-    return str.replace(/&/g, '&amp;')
-              .replace(/</g, '&lt;')
-              .replace(/>/g, '&gt;')
-              .replace(/"/g, '&quot;')
-              .replace(/'/g, '&#039;');
-}
-
-/**
- * (دالة مُعدّلة لدعم الـ Spoiler)
- */
-function formatQuizText(quizData) {
-    // نستخدم escapeHTML لضمان عدم تضارب نص السؤال مع تنسيق HTML
-    let formattedText = ` ${escapeHTML(quizData.question)}\n\n`;
-    const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
-
-    const formattedOptions = quizData.options.map((optionText, optIndex) => {
-        // نستخدم escapeHTML لكل خيار أيضاً
-        return `${optionLetters[optIndex]}) ${escapeHTML(optionText)}`;
-    });
-    formattedText += formattedOptions.join('\n');
-
-    if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
-        const correctLetter = optionLetters[quizData.correctOptionId];
-        // نستخدم escapeHTML للإجابة
-        const correctText = escapeHTML(quizData.options[quizData.correctOptionId]);
-        
-        // ✨ التعديل الأساسي هنا: إضافة <tg-spoiler>
-        formattedText += `\n\n<tg-spoiler>Answer: ${correctLetter}) ${correctText}</tg-spoiler>`;
-    }
-
-    if (quizData.explanation) {
-        // ✨ التعديل الأساسي هنا: إضافة <tg-spoiler>
-        formattedText += `\n<tg-spoiler>Explanation: ${escapeHTML(quizData.explanation)}</tg-spoiler>`;
-    }
-    return formattedText;
 }
