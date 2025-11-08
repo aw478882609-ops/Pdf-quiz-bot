@@ -8,8 +8,11 @@ const micro = require('micro');
 // تهيئة البوت
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const bot = new TelegramBot(token);
+const userState = {};
 
-/**
+const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
+
+/*
  * دالة لإرسال إشعار للمشرف (لا ترسل شيئًا إذا كان المستخدم هو المشرف نفسه).
  * * ✨ النسخة المعدلة: تم إزالة parse_mode لضمان وصول الإشعار دائماً
  * حتى لو كانت رسائل الخطأ أو أسماء المستخدمين تحتوي على رموز خاصة.
