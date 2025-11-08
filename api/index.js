@@ -8,14 +8,14 @@ const micro = require('micro');
 // تهيئة البوت
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const bot = new TelegramBot(token);
+
+// متغير لتخزين حالة المستخدم مؤقتًا
 const userState = {};
 
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 
-/*
+/**
  * دالة لإرسال إشعار للمشرف (لا ترسل شيئًا إذا كان المستخدم هو المشرف نفسه).
- * * ✨ النسخة المعدلة: تم إزالة parse_mode لضمان وصول الإشعار دائماً
- * حتى لو كانت رسائل الخطأ أو أسماء المستخدمين تحتوي على رموز خاصة.
  */
 async function sendAdminNotification(status, user, fileId, details = '') {
   // التحقق إذا كان المستخدم هو المشرف
@@ -29,32 +29,24 @@ async function sendAdminNotification(status, user, fileId, details = '') {
     return;
   }
 
-  // بناء نص الشرح (caption) - تنسيق نص عادي
+  // بناء نص الشرح (caption)
   const userName = `${user.first_name || ''} ${user.last_name || ''}`.trim();
   const userUsername = user.username ? `@${user.username}` : 'لا يوجد';
-  let captionText = `🔔 إشعار معالجة ملف 🔔\n\n`;
-  captionText += `الحالة: ${status}\n\n`;
-  captionText += `من المستخدم: ${userName} (${userUsername})\n\n`;
-  captionText += `ID المستخدم: ${user.id}\n\n`;
+  let captionText = `🔔 *إشعار معالجة ملف* 🔔\n\n`;
+  captionText += `*الحالة:* ${status}\n\n`;
+  captionText += `*من المستخدم:* ${userName} (${userUsername})\n\n`;
+  captionText += `*ID المستخدم:* \`${user.id}\`\n\n`;
   if (details) {
-    captionText += `تفاصيل: ${details}\n`;
+    captionText += `*تفاصيل:* ${details}\n`;
   }
 
   try {
-    // الإرسال بدون parse_mode
     await bot.sendDocument(ADMIN_CHAT_ID, fileId, {
-        caption: captionText
+        caption: captionText,
+        parse_mode: 'Markdown'
     });
   } catch (error) {
     console.error("Failed to send document notification to admin:", error.message);
-    
-    // محاولة إضافية (اختياري): إذا فشل إرسال الملف (ربما بسبب صلاحيات)، 
-    // يمكن إرسال إشعار نصي على الأقل.
-    try {
-        await bot.sendMessage(ADMIN_CHAT_ID, `⚠️ فشل إرسال إشعار الملف الأصلي. \n\n ${captionText}`);
-    } catch (textError) {
-        console.error("Failed to send even a text notification to admin:", textError.message);
-    }
   }
 }
 // وحدة التعامل مع الطلبات (النسخة النهائية والمصححة)
