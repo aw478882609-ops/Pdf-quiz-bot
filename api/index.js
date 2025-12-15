@@ -388,46 +388,41 @@ async function extractWithAI(text) {
         return [];
     }
 
-    // ✨ التعديل 1: استخدام نموذج Gemma 3 القوي والمجاني (لتجنب قيود 2.5 Flash)
-    // ملاحظة: نستخدم v1beta لأن النماذج الجديدة غالباً تكون متاحة عليه
+    // نستخدم gemma-3-27b-it لأنه الأقوى والمتاح مجاناً بنطاق واسع
     const modelId = 'gemma-3-27b-it'; 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
-    
-    // ✨ التعديل 2: تحسين الـ Prompt ليكون صارماً جداً لأن Gemma حساس للتعليمات
+
+    // Prompt صارم جداً لأننا أزلنا خاصية JSON Mode
     const prompt = `
-    Task: Extract all multiple-choice questions from the provided text into a strict JSON array.
+    You are a strict JSON generator.
+    Task: Extract all multiple-choice questions from the provided text into a RAW JSON array.
     
-    Output Format Requirements:
-    - You must output ONLY a raw JSON array. Do not use Markdown code blocks (no \`\`\`json).
-    - No introductory text or explanations outside the JSON.
+    Rules:
+    1. Output ONLY valid JSON. No Markdown text, no \`\`\`json blocks, no explanations.
+    2. If the text is empty or has no questions, return an empty array [].
     
-    JSON Object Structure for each question:
+    JSON Structure per question:
     {
-      "question": "The full question text. Include the number if found (e.g. '1. What is...')",
-      "options": ["Option A", "Option B", "Option C", ...],
-      "correctAnswerIndex": 0, // The 0-based index of the correct answer (0 for A, 1 for B...)
-      "explanation": "Explanation if provided, otherwise null"
+      "question": "The question text (include number if found, e.g. '1. Question...')",
+      "options": ["Option 1", "Option 2", ...],
+      "correctAnswerIndex": 0, // 0-based index. Infer if not marked. If unsure, use 0.
+      "explanation": "Explanation or null"
     }
 
-    Important Constraints:
-    - If the correct answer is not explicitly marked, try to infer it. If impossible, set "correctAnswerIndex" to 0.
-    - Ignore headers, footers, or page numbers that are not part of the questions.
-    
     Text to analyze:
     """
     ${text.substring(0, 30000)}
     """
     `;
 
-    // ✨ التعديل 3: إجبار النموذج على إخراج JSON باستخدام responseMimeType
     const payload = {
         contents: [{
             parts: [{ text: prompt }]
         }],
         generationConfig: {
-            temperature: 0.1, // تقليل العشوائية لأقصى درجة
-            maxOutputTokens: 8192,
-            responseMimeType: "application/json" // هذا الإعداد يضمن خروج JSON سليم
+            temperature: 0.1,      // تقليل العشوائية لأقصى حد
+            maxOutputTokens: 8192  // السماح برد طويل
+            // ❌ تم حذف responseMimeType لأنه سبب الخطأ
         }
     };
 
@@ -443,31 +438,43 @@ async function extractWithAI(text) {
 
         const aiResponseText = response.data.candidates[0].content.parts[0].text;
         
-        // تنظيف الاستجابة من علامات الكود (تحسباً إذا أضافها النموذج رغم التعليمات)
-        const cleanedJsonString = aiResponseText.replace(/```json/g, '').replace(/```/g, '').trim();
+        // تنظيف الاستجابة يدوياً لأن النموذج قد يضع علامات Markdown
+        // نقوم بحذف ```json و ``` وأي مسافات زائدة
+        let cleanedJsonString = aiResponseText
+            .replace(/```json/gi, '') // حذف بداية الكود
+            .replace(/```/g, '')      // حذف نهاية الكود
+            .trim();                  // حذف المسافات
+
+        // أحياناً يضع النموذج نصاً قبل الـ JSON، نحاول العثور على بداية المصفوفة [
+        const firstBracket = cleanedJsonString.indexOf('[');
+        const lastBracket = cleanedJsonString.lastIndexOf(']');
         
+        if (firstBracket !== -1 && lastBracket !== -1) {
+            cleanedJsonString = cleanedJsonString.substring(firstBracket, lastBracket + 1);
+        }
+
         let parsedQuestions;
         try {
             parsedQuestions = JSON.parse(cleanedJsonString);
         } catch (e) {
-            console.error("Failed to parse JSON from AI response:", e.message);
+            console.error("Failed to parse JSON from Gemma response:", e.message);
+            // console.log("Raw response was:", aiResponseText); // للتجربة إذا أردت رؤية الرد الخام
             return [];
         }
 
-        // دعم احتمالية أن يكون الرد كائن بداخله مصفوفة (مثل { questions: [...] })
+        // التعامل مع صيغة { questions: [...] } إذا حدثت
         if (!Array.isArray(parsedQuestions) && parsedQuestions.questions) {
             parsedQuestions = parsedQuestions.questions;
         }
         
-        // التحقق النهائي من صحة البيانات
+        // التحقق النهائي
         if (Array.isArray(parsedQuestions) && parsedQuestions.length > 0) {
-            // التحقق من الحقول الأساسية
             const validQuestions = parsedQuestions.filter(q => q.question && Array.isArray(q.options));
             
             if (validQuestions.length > 0) {
-                console.log(`AI successfully extracted ${validQuestions.length} questions.`);
+                console.log(`Gemma 3 successfully extracted ${validQuestions.length} questions.`);
                 
-                // (اختياري) تنظيف إضافي لضمان أن رقم السؤال مدمج إذا كان منفصلاً
+                // دمج الرقم مع السؤال لضمان التنسيق
                 validQuestions.forEach(q => {
                     if (q.questionNumber) {
                         q.question = `${q.questionNumber}) ${q.question}`;
@@ -479,15 +486,13 @@ async function extractWithAI(text) {
             }
         }
         
-        console.error("AI returned valid JSON but no valid questions found.");
         return [];
 
     } catch (error) {
-        console.error("Error calling AI API:", error.response ? error.response.data : error.message);
-        // لا نوقف البرنامج بل نرجع مصفوفة فارغة ليتم استخدام Regex كخطة بديلة
+        console.error("Error calling Gemma API:", error.response ? error.response.data : error.message);
         return [];
     }
-}
+      }
 // (دالة extractWithRegex تبقى كما هي بدون تغيير)
 function extractWithRegex(text) {
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\f/g, '\n').replace(/\u2028|\u2029/g, '\n');
