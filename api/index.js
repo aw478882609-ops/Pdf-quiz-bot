@@ -387,43 +387,49 @@ async function extractWithAI(text) {
         console.log("GEMINI_API_KEY is not set. Skipping AI extraction.");
         return [];
     }
-
-    // نستخدم gemma-3-27b-it لأنه الأقوى والمتاح مجاناً بنطاق واسع
-    const modelId = 'gemma-3-27b-it'; 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
-
-    // Prompt صارم جداً لأننا أزلنا خاصية JSON Mode
+    const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+    
+    // ✨✨=== التعديل هنا: تحديث الـ prompt ليطلب رقم السؤال ===✨✨
     const prompt = `
-    You are a strict JSON generator.
-    Task: Extract all multiple-choice questions from the provided text into a RAW JSON array.
-    
-    Rules:
-    1. Output ONLY valid JSON. No Markdown text, no \`\`\`json blocks, no explanations.
-    2. If the text is empty or has no questions, return an empty array [].
-    
-    JSON Structure per question:
-    {
-      "question": "The question text (include number if found, e.g. '1. Question...')",
-      "options": ["Option 1", "Option 2", ...],
-      "correctAnswerIndex": 0, // 0-based index. Infer if not marked. If unsure, use 0.
-      "explanation": "Explanation or null"
-    }
-
-    Text to analyze:
-    """
-    ${text.substring(0, 30000)}
-    """
+    Analyze the following text and extract all multiple-choice questions.
+    For each question, provide:
+    1. The question number as a string (e.g., "1", "Q2", "٣"), if it exists.
+    2. The full question text.
+    3. A list of all possible options.
+    4. The index of the correct answer (starting from 0).
+    5. The explanation for the answer, if one is provided in the text.
+    VERY IMPORTANT: Respond ONLY with a valid JSON array of objects. Each object should have these exact keys: "question", "options", "correctAnswerIndex", and optionally "questionNumber" and "explanation". The "questionNumber" key should only be present if a number is explicitly found next to the question in the source text. Do not include any text or markdown formatting outside the JSON array.
+    Example Response Format:
+    [
+      {
+        "questionNumber": "1",
+        "question": "What is the capital of France?",
+        "options": ["Berlin", "Madrid", "Paris", "Rome"],
+        "correctAnswerIndex": 2,
+        "explanation": "Paris is the capital and most populous city of France."
+      },
+      {
+        "questionNumber": "Q2",
+        "question": "Which planet is known as the Red Planet?",
+        "options": ["Earth", "Mars", "Jupiter", "Venus"],
+        "correctAnswerIndex": 1
+      },
+      {
+        "question": "Which of these is not a primary color?",
+        "options": ["Red", "Blue", "Green", "Yellow"],
+        "correctAnswerIndex": 2
+      }
+    ]
+    Here is the text to analyze:
+    ---
+    ${text}
+    ---
     `;
 
     const payload = {
         contents: [{
             parts: [{ text: prompt }]
-        }],
-        generationConfig: {
-            temperature: 0.1,      // تقليل العشوائية لأقصى حد
-            maxOutputTokens: 8192  // السماح برد طويل
-            // ❌ تم حذف responseMimeType لأنه سبب الخطأ
-        }
+        }]
     };
 
     try {
@@ -432,67 +438,45 @@ async function extractWithAI(text) {
         });
 
         if (!response.data.candidates || response.data.candidates.length === 0 || !response.data.candidates[0].content) {
-            console.error("AI responded but with no valid content.");
+            console.error("AI responded but with no valid content or candidates.");
             return [];
         }
 
         const aiResponseText = response.data.candidates[0].content.parts[0].text;
+        // تنظيف الاستجابة من أي علامات إضافية قد يضعها النموذج
+        const cleanedJsonString = aiResponseText.replace(/```json/g, '').replace(/```/g, '').trim();
+        let parsedQuestions = JSON.parse(cleanedJsonString);
         
-        // تنظيف الاستجابة يدوياً لأن النموذج قد يضع علامات Markdown
-        // نقوم بحذف ```json و ``` وأي مسافات زائدة
-        let cleanedJsonString = aiResponseText
-            .replace(/```json/gi, '') // حذف بداية الكود
-            .replace(/```/g, '')      // حذف نهاية الكود
-            .trim();                  // حذف المسافات
-
-        // أحياناً يضع النموذج نصاً قبل الـ JSON، نحاول العثور على بداية المصفوفة [
-        const firstBracket = cleanedJsonString.indexOf('[');
-        const lastBracket = cleanedJsonString.lastIndexOf(']');
-        
-        if (firstBracket !== -1 && lastBracket !== -1) {
-            cleanedJsonString = cleanedJsonString.substring(firstBracket, lastBracket + 1);
-        }
-
-        let parsedQuestions;
-        try {
-            parsedQuestions = JSON.parse(cleanedJsonString);
-        } catch (e) {
-            console.error("Failed to parse JSON from Gemma response:", e.message);
-            // console.log("Raw response was:", aiResponseText); // للتجربة إذا أردت رؤية الرد الخام
-            return [];
-        }
-
-        // التعامل مع صيغة { questions: [...] } إذا حدثت
-        if (!Array.isArray(parsedQuestions) && parsedQuestions.questions) {
-            parsedQuestions = parsedQuestions.questions;
-        }
-        
-        // التحقق النهائي
+        // التحقق من أن الاستجابة هي مصفوفة وبها بيانات
         if (Array.isArray(parsedQuestions) && parsedQuestions.length > 0) {
-            const validQuestions = parsedQuestions.filter(q => q.question && Array.isArray(q.options));
-            
-            if (validQuestions.length > 0) {
-                console.log(`Gemma 3 successfully extracted ${validQuestions.length} questions.`);
-                
-                // دمج الرقم مع السؤال لضمان التنسيق
-                validQuestions.forEach(q => {
+            // التحقق من أن كل عنصر يحتوي على الحقول الأساسية المطلوبة
+            const areQuestionsValid = parsedQuestions.every(q => q.question && Array.isArray(q.options) && q.correctAnswerIndex !== undefined);
+            if (areQuestionsValid) {
+                console.log(`AI successfully extracted ${parsedQuestions.length} questions.`);
+
+                // ✨✨=== التعديل الجديد: دمج رقم السؤال مع نص السؤال ===✨✨
+                parsedQuestions.forEach(q => {
                     if (q.questionNumber) {
                         q.question = `${q.questionNumber}) ${q.question}`;
-                        delete q.questionNumber;
+                        delete q.questionNumber; // حذف الخاصية بعد الدمج
                     }
                 });
+                
+                return parsedQuestions;
 
-                return validQuestions;
+            } else {
+                 console.error("AI response is an array, but some objects are missing required keys.");
+                 return [];
             }
         }
-        
         return [];
-
     } catch (error) {
-        console.error("Error calling Gemma API:", error.response ? error.response.data : error.message);
-        return [];
+        console.error("Error calling or parsing Gemini API response:", error.response ? error.response.data : error.message);
+        throw new Error("Failed to get a valid response from AI.");
     }
-      }
+          }
+
+
 // (دالة extractWithRegex تبقى كما هي بدون تغيير)
 function extractWithRegex(text) {
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\f/g, '\n').replace(/\u2028|\u2029/g, '\n');
