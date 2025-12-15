@@ -113,6 +113,7 @@ module.exports = async (req, res) => {
                     const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
                     const dataBuffer = Buffer.from(response.data);
                     const pdfData = await pdf(dataBuffer);
+                  console.log(`📏 [BENCHMARK] Total Characters: ${pdfData.text.length}`);
 
                     // استدعاء دالة الاستخراج المعدلة
                     const extractionResult = await extractQuestions(pdfData.text);
