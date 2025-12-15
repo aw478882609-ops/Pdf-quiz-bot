@@ -44,7 +44,7 @@ async function sendAdminNotification(status, user, fileId, details = '') {
   }
 }
 
-// وحدة التعامل مع الطلبات (النسخة النهائية والمصححة)
+// وحدة التعامل مع الطلبات
 module.exports = async (req, res) => {
     try {
         if (req.method !== 'POST') {
@@ -53,21 +53,16 @@ module.exports = async (req, res) => {
         const body = await micro.json(req);
         const update = body;
 
-        // 🔍 تسجيل كل تحديث قادم من تليجرام (للمراقبة)
         console.log("⬇️ Incoming Telegram Update:", JSON.stringify(update, null, 2));
 
-        // =================================================================
-        // 🛡️ [حماية ضد التكرار]: التحقق من وقت الرسالة (Stale Request Check)
-        // =================================================================
+        // 🛡️ حماية ضد التكرار الزمني
         if (update.message && update.message.date) {
-            const messageDate = update.message.date; // توقيت الرسالة (Unix Timestamp بالثواني)
-            const currentTime = Math.floor(Date.now() / 1000); // الوقت الحالي بالثواني
+            const messageDate = update.message.date;
+            const currentTime = Math.floor(Date.now() / 1000);
             const timeDiff = currentTime - messageDate;
 
-            // إذا مر أكثر من 20 ثانية على الرسالة، فهذا "تكرار" (Retry) من تليجرام بسبب التأخير
             if (timeDiff > 20) {
-                console.warn(`⚠️ [STALE REQUEST IGNORED] Time Diff: ${timeDiff}s. UpdateID: ${update.update_id}`);
-                // الرد بـ OK فوراً لإسكات تليجرام
+                console.warn(`⚠️ [STALE REQUEST IGNORED] Time Diff: ${timeDiff}s.`);
                 return res.status(200).send('Stale request ignored.');
             }
         }
@@ -78,18 +73,16 @@ module.exports = async (req, res) => {
             const chatId = message.chat.id;
             const user = message.from;
             const fileId = message.document.file_id;
-            // استخدام update_id لضمان دقة الكاش المحلي
             const uniqueRequestId = `${fileId}_${update.update_id}`;
 
-            // 🧠 كاش محلي (إضافي) لمنع التحليل المكرر في نفس اللحظة
+            // كاش محلي
             if (!global.processingFiles) global.processingFiles = new Set();
 
             if (global.processingFiles.has(uniqueRequestId)) {
-                console.warn(`⏳ Duplicate in-memory request detected for ${uniqueRequestId}. Ignoring.`);
+                console.warn(`⏳ Duplicate request detected. Ignoring.`);
                 return res.status(200).send('Duplicate processing ignored.');
             }
 
-            // إضافة للكاش
             global.processingFiles.add(uniqueRequestId);
 
             let adminNotificationStatus = '';
@@ -104,19 +97,36 @@ module.exports = async (req, res) => {
             } else if (message.document.mime_type !== 'application/pdf') {
                 await bot.sendMessage(chatId, '⚠️ يرجى إرسال ملف بصيغة PDF فقط.');
                 adminNotificationStatus = 'ملف مرفوض 📄';
-                adminNotificationDetails = `السبب: نوع الملف ليس PDF (النوع المرسل: ${message.document.mime_type}).`;
+                adminNotificationDetails = `السبب: نوع الملف ليس PDF.`;
                 global.processingFiles.delete(uniqueRequestId);
             } else {
-                await bot.sendMessage(chatId, '📑 استلمت الملف، جاري تحليله واستخراج الأسئلة...');
+                // ⏳ رسالة تصبيرية أولى
+                const waitingMsg = await bot.sendMessage(chatId, '⏳ استلمت الملف.. جاري التحميل والتحليل، قد يستغرق ذلك بضع دقائق للملفات الكبيرة..');
+                
                 try {
                     const fileLink = await bot.getFileLink(fileId);
                     const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
                     const dataBuffer = Buffer.from(response.data);
                     const pdfData = await pdf(dataBuffer);
-                  console.log(`📏 [BENCHMARK] Total Characters: ${pdfData.text.length}`);
+                    console.log(`📏 [BENCHMARK] Total Characters: ${pdfData.text.length}`);
 
-                    // استدعاء دالة الاستخراج المعدلة
-                    const extractionResult = await extractQuestions(pdfData.text);
+                    // =========================================================
+                    // ⏱️ سباق الزمن: التحليل vs القنبلة الموقوتة (295 ثانية)
+                    // =========================================================
+                    
+                    // 1. الوعد بالتحليل (العملية الأساسية)
+                    const extractionPromise = extractQuestions(pdfData.text);
+
+                    // 2. الوعد بالانفجار (Timeout)
+                    const timeoutPromise = new Promise((_, reject) => {
+                        setTimeout(() => {
+                            reject(new Error("TIMEOUT_LIMIT_REACHED"));
+                        }, 295000); // 295 ثانية (قبل الـ 300 بقليل)
+                    });
+
+                    // السباق!
+                    const extractionResult = await Promise.race([extractionPromise, timeoutPromise]);
+
                     const questions = extractionResult.questions;
                     const extractionMethod = extractionResult.method;
 
@@ -134,6 +144,9 @@ module.exports = async (req, res) => {
                                            `🛠️ *طريقة الاستخراج:* ${extractionMethod}\n\n` +
                                            `اختر أين وكيف تريد إرسالها:`;
 
+                        // حذف رسالة الانتظار
+                        try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
+
                         await bot.sendMessage(chatId, successMsg, {
                             parse_mode: 'Markdown',
                             reply_markup: keyboard
@@ -141,17 +154,28 @@ module.exports = async (req, res) => {
                         adminNotificationStatus = 'نجاح ✅';
                         adminNotificationDetails = `تم العثور على ${questions.length} سؤال باستخدام (${extractionMethod}).`;
                     } else {
-                        await bot.sendMessage(chatId, '❌ لم أتمكن من العثور على أي أسئلة بصيغة صحيحة في الملف. تأكد أن النص قابل للنسخ. للمساعدة اضغط /help');
+                        try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
+                        await bot.sendMessage(chatId, '❌ لم أتمكن من العثور على أي أسئلة بصيغة صحيحة في الملف.');
                         adminNotificationStatus = 'نجاح (لكن فارغ) 🤷‍♂️';
                         adminNotificationDetails = 'تمت معالجة الملف لكن لم يتم العثور على أسئلة.';
                     }
                 } catch (error) {
                     console.error("Error processing PDF:", error);
-                    await bot.sendMessage(chatId, '⚠️ حدث خطأ أثناء معالجة الملف. يرجى التأكد من أن الملف سليم وغير تالف.');
-                    adminNotificationStatus = 'فشل ❌';
-                    adminNotificationDetails = `السبب: ${error.message}`;
+                    
+                    // حذف رسالة الانتظار
+                    try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
+
+                    // 🚨 التعامل مع خطأ انتهاء الوقت خصيصاً
+                    if (error.message === "TIMEOUT_LIMIT_REACHED") {
+                        await bot.sendMessage(chatId, '⚠️ عذراً، عملية التحليل استغرقت وقتاً أطول من المسموح (5 دقائق). \n\n🔴 **السبب:** عدد صفحات/أحرف الملف ضخم جداً.\n✂️ **الحل:** يرجى تقسيم ملف الـ PDF إلى جزأين وإرسال كل جزء على حدة.');
+                        adminNotificationStatus = 'فشل (وقت) ⏱️';
+                        adminNotificationDetails = 'تم قطع العملية عند الثانية 295 بسبب حجم الملف.';
+                    } else {
+                        await bot.sendMessage(chatId, '⚠️ حدث خطأ أثناء معالجة الملف. يرجى التأكد من أن الملف سليم.');
+                        adminNotificationStatus = 'فشل ❌';
+                        adminNotificationDetails = `السبب: ${error.message}`;
+                    }
                 } finally {
-                    // تنظيف الكاش دائماً
                     global.processingFiles.delete(uniqueRequestId);
                 }
             }
@@ -165,10 +189,7 @@ module.exports = async (req, res) => {
         else if (update.message && update.message.poll) {
             const message = update.message;
             const poll = message.poll;
-
-            if (poll.type !== 'quiz') {
-                return res.status(200).send('OK');
-            }
+            if (poll.type !== 'quiz') return res.status(200).send('OK');
 
             const chatId = message.chat.id;
             const userId = message.from.id;
@@ -182,9 +203,7 @@ module.exports = async (req, res) => {
             if (message.forward_date) {
                 if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
                     const formattedText = formatQuizText(quizData);
-                    await bot.sendMessage(chatId, formattedText, {
-                        reply_to_message_id: message.message_id
-                    });
+                    await bot.sendMessage(chatId, formattedText, { reply_to_message_id: message.message_id });
                 } else {
                     if (!userState[userId] || !userState[userId].pending_polls) {
                         userState[userId] = { pending_polls: {} };
@@ -215,114 +234,113 @@ module.exports = async (req, res) => {
 
         // 3️⃣ التعامل مع الضغط على الأزرار (Callback Query)
         else if (update.callback_query) {
-            const callbackQuery = update.callback_query;
-            const userId = callbackQuery.from.id;
-            const chatId = callbackQuery.message.chat.id;
-            const messageId = callbackQuery.message.message_id;
-            const data = callbackQuery.data;
-            const gasWebAppUrl = process.env.GAS_WEB_APP_URL;
-
-            if (data.startsWith('poll_answer_')) {
-                if (!userState[userId] || !userState[userId].pending_polls || !userState[userId].pending_polls[messageId]) {
-                    await bot.answerCallbackQuery(callbackQuery.id, { text: 'هذه الجلسة انتهت.', show_alert: true });
-                    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
-                    return res.status(200).send('OK');
-                }
-                const poll_data = userState[userId].pending_polls[messageId];
-                poll_data.correctOptionId = parseInt(data.split('_')[2], 10);
-                const formattedText = formatQuizText(poll_data);
-                await bot.editMessageText(formattedText, {
-                    chat_id: chatId,
-                    message_id: messageId,
-                });
-                delete userState[userId].pending_polls[messageId];
-                await bot.answerCallbackQuery(callbackQuery.id);
-            }
-            else {
-                if (!userState[userId] || !userState[userId].questions) {
-                    await bot.answerCallbackQuery(callbackQuery.id, { text: 'انتهت الجلسة، أعد إرسال الملف.', show_alert: true });
-                    return res.status(200).send('OK');
-                }
-                if (!gasWebAppUrl) {
-                    await bot.editMessageText('⚠️ خطأ: رابط GAS غير موجود في الإعدادات.', { chat_id: chatId, message_id: messageId });
-                    return res.status(200).send('OK');
-                }
-                
-                if (data === 'send_here' || data === 'send_and_close_here') {
-                    const { questions } = userState[userId];
-                    const shouldClose = data === 'send_and_close_here';
-                    const payload = { questions, targetChatId: chatId, originalChatId: chatId, startIndex: 0, chatType: 'private', closePolls: shouldClose };
-                    axios.post(gasWebAppUrl, payload).catch(err => console.error("Error calling GAS:", err.message));
-                    await bot.answerCallbackQuery(callbackQuery.id);
-                    await bot.editMessageText(`✅ تم الإرسال للخدمة الخارجية.\n\nسيتم إرسال ${questions.length} سؤالًا.`, { chat_id: chatId, message_id: messageId });
-                    delete userState[userId];
-                } else if (data === 'send_to_channel') {
-                    userState[userId].awaiting = 'channel_id';
-                    await bot.answerCallbackQuery(callbackQuery.id);
-                    await bot.editMessageText('يرجى إرسال معرف (ID) القناة أو المجموعة الآن.\n(مثال: @username)', { chat_id: chatId, message_id: messageId });
-                } else if (data.startsWith('confirm_send')) {
-                    if (userState[userId] && userState[userId].awaiting === 'send_confirmation') {
-                        const { questions, targetChatId, targetChatTitle, chatType } = userState[userId];
-                        const shouldClose = data.endsWith('_and_close');
-                        const payload = { questions, targetChatId, originalChatId: chatId, startIndex: 0, chatType, closePolls: shouldClose };
-                        axios.post(gasWebAppUrl, payload).catch(err => console.error("Error calling GAS:", err.message));
-                        await bot.answerCallbackQuery(callbackQuery.id);
-                        await bot.editMessageText(`✅ تم الإرسال إلى "${targetChatTitle}".`, { chat_id: chatId, message_id: messageId });
-                        delete userState[userId];
-                    }
-                } else if (data === 'cancel_send') {
-                    await bot.answerCallbackQuery(callbackQuery.id);
-                    await bot.editMessageText('❌ تم إلغاء العملية.', { chat_id: chatId, message_id: messageId });
-                    delete userState[userId];
-                }
-            }
+             const callbackQuery = update.callback_query;
+             const userId = callbackQuery.from.id;
+             const chatId = callbackQuery.message.chat.id;
+             const messageId = callbackQuery.message.message_id;
+             const data = callbackQuery.data;
+             const gasWebAppUrl = process.env.GAS_WEB_APP_URL;
+ 
+             if (data.startsWith('poll_answer_')) {
+                 if (!userState[userId] || !userState[userId].pending_polls || !userState[userId].pending_polls[messageId]) {
+                     await bot.answerCallbackQuery(callbackQuery.id, { text: 'هذه الجلسة انتهت.', show_alert: true });
+                     await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
+                     return res.status(200).send('OK');
+                 }
+                 const poll_data = userState[userId].pending_polls[messageId];
+                 poll_data.correctOptionId = parseInt(data.split('_')[2], 10);
+                 const formattedText = formatQuizText(poll_data);
+                 await bot.editMessageText(formattedText, {
+                     chat_id: chatId,
+                     message_id: messageId,
+                 });
+                 delete userState[userId].pending_polls[messageId];
+                 await bot.answerCallbackQuery(callbackQuery.id);
+             }
+             else {
+                 if (!userState[userId] || !userState[userId].questions) {
+                     await bot.answerCallbackQuery(callbackQuery.id, { text: 'انتهت الجلسة، أعد إرسال الملف.', show_alert: true });
+                     return res.status(200).send('OK');
+                 }
+                 if (!gasWebAppUrl) {
+                     await bot.editMessageText('⚠️ خطأ: رابط GAS غير موجود في الإعدادات.', { chat_id: chatId, message_id: messageId });
+                     return res.status(200).send('OK');
+                 }
+                 
+                 if (data === 'send_here' || data === 'send_and_close_here') {
+                     const { questions } = userState[userId];
+                     const shouldClose = data === 'send_and_close_here';
+                     const payload = { questions, targetChatId: chatId, originalChatId: chatId, startIndex: 0, chatType: 'private', closePolls: shouldClose };
+                     axios.post(gasWebAppUrl, payload).catch(err => console.error("Error calling GAS:", err.message));
+                     await bot.answerCallbackQuery(callbackQuery.id);
+                     await bot.editMessageText(`✅ تم الإرسال للخدمة الخارجية.\n\nسيتم إرسال ${questions.length} سؤالًا.`, { chat_id: chatId, message_id: messageId });
+                     delete userState[userId];
+                 } else if (data === 'send_to_channel') {
+                     userState[userId].awaiting = 'channel_id';
+                     await bot.answerCallbackQuery(callbackQuery.id);
+                     await bot.editMessageText('يرجى إرسال معرف (ID) القناة أو المجموعة الآن.\n(مثال: @username)', { chat_id: chatId, message_id: messageId });
+                 } else if (data.startsWith('confirm_send')) {
+                     if (userState[userId] && userState[userId].awaiting === 'send_confirmation') {
+                         const { questions, targetChatId, targetChatTitle, chatType } = userState[userId];
+                         const shouldClose = data.endsWith('_and_close');
+                         const payload = { questions, targetChatId, originalChatId: chatId, startIndex: 0, chatType, closePolls: shouldClose };
+                         axios.post(gasWebAppUrl, payload).catch(err => console.error("Error calling GAS:", err.message));
+                         await bot.answerCallbackQuery(callbackQuery.id);
+                         await bot.editMessageText(`✅ تم الإرسال إلى "${targetChatTitle}".`, { chat_id: chatId, message_id: messageId });
+                         delete userState[userId];
+                     }
+                 } else if (data === 'cancel_send') {
+                     await bot.answerCallbackQuery(callbackQuery.id);
+                     await bot.editMessageText('❌ تم إلغاء العملية.', { chat_id: chatId, message_id: messageId });
+                     delete userState[userId];
+                 }
+             }
         }
         
         // 4️⃣ التعامل مع الرسائل النصية
         else if (update.message && update.message.text) {
             const message = update.message;
-            const userId = message.from.id;
             const chatId = message.chat.id;
             const text = message.text;
+            const userId = message.from.id;
 
             if (text.toLowerCase() === '/help') {
                 const fileId = 'BQACAgQAAxkBAAE72dRo2-EHmbty7PivB2ZsIz1WKkAXXgAC5BsAAtF24VLmLAPbHKW4IDYE';
-                await bot.sendDocument(chatId, fileId, {
-                    caption: 'مرحباً بك! 👋\n\nإليك دليل المستخدم الشامل للبوت بصيغة PDF. 📖'
-                });
+                await bot.sendDocument(chatId, fileId, { caption: 'مرحباً بك! 👋\n\nإليك دليل المستخدم الشامل للبوت بصيغة PDF. 📖' });
             }
             else if (userState[userId] && userState[userId].awaiting === 'channel_id') {
-                const targetChatId = text.trim();
-                try {
-                    const chatInfo = await bot.getChat(targetChatId);
-                    const botMember = await bot.getChatMember(targetChatId, (await bot.getMe()).id);
-                    let infoText = `*-- الهدف: ${chatInfo.title} --*\n`;
-                    let canProceed = false;
-                    if (botMember.status === 'administrator' || botMember.status === 'creator') {
-                        if (botMember.can_post_messages) canProceed = true;
-                    }
-                    if (canProceed) {
-                        userState[userId] = {
-                            ...userState[userId],
-                            awaiting: 'send_confirmation',
-                            targetChatId: chatInfo.id,
-                            targetChatTitle: chatInfo.title,
-                            chatType: chatInfo.type
-                        };
-                        const confirmationKeyboard = { 
-                            inline_keyboard: [
-                                [{ text: '✅ نعم، إرسال', callback_data: 'confirm_send' }],
-                                [{ text: '🔒 إرسال وإغلاق', callback_data: 'confirm_send_and_close' }],
-                                [{ text: '❌ إلغاء', callback_data: 'cancel_send' }]
-                            ] 
-                        };
-                        await bot.sendMessage(chatId, infoText + `هل تريد إرسال ${userState[userId].questions.length} سؤال؟`, { parse_mode: 'Markdown', reply_markup: confirmationKeyboard });
-                    } else {
-                        await bot.sendMessage(chatId, `⚠️ لا يمكن المتابعة. البوت ليس مشرفاً أو لا يملك صلاحية النشر.`);
-                    }
-                } catch (error) {
-                    await bot.sendMessage(chatId, '❌ فشل! تأكد من المعرف وأن البوت عضو في القناة.');
-                }
+                // ... (نفس منطق التعامل مع القنوات كما هو) ...
+                 const targetChatId = text.trim();
+                 try {
+                     const chatInfo = await bot.getChat(targetChatId);
+                     const botMember = await bot.getChatMember(targetChatId, (await bot.getMe()).id);
+                     let infoText = `*-- الهدف: ${chatInfo.title} --*\n`;
+                     let canProceed = false;
+                     if (botMember.status === 'administrator' || botMember.status === 'creator') {
+                         if (botMember.can_post_messages) canProceed = true;
+                     }
+                     if (canProceed) {
+                         userState[userId] = {
+                             ...userState[userId],
+                             awaiting: 'send_confirmation',
+                             targetChatId: chatInfo.id,
+                             targetChatTitle: chatInfo.title,
+                             chatType: chatInfo.type
+                         };
+                         const confirmationKeyboard = { 
+                             inline_keyboard: [
+                                 [{ text: '✅ نعم، إرسال', callback_data: 'confirm_send' }],
+                                 [{ text: '🔒 إرسال وإغلاق', callback_data: 'confirm_send_and_close' }],
+                                 [{ text: '❌ إلغاء', callback_data: 'cancel_send' }]
+                             ] 
+                         };
+                         await bot.sendMessage(chatId, infoText + `هل تريد إرسال ${userState[userId].questions.length} سؤال؟`, { parse_mode: 'Markdown', reply_markup: confirmationKeyboard });
+                     } else {
+                         await bot.sendMessage(chatId, `⚠️ لا يمكن المتابعة. البوت ليس مشرفاً أو لا يملك صلاحية النشر.`);
+                     }
+                 } catch (error) {
+                     await bot.sendMessage(chatId, '❌ فشل! تأكد من المعرف وأن البوت عضو في القناة.');
+                 }
             }
         }
     } catch (error) {
@@ -330,7 +348,6 @@ module.exports = async (req, res) => {
     }
     res.status(200).send('OK');
 };
-
 
 // =================================================================
 // ✨✨ === قسم الدوال الخاصة باستخراج الأسئلة === ✨✨
@@ -348,7 +365,9 @@ async function extractQuestions(text) {
                 return { questions: questions, method: 'AI 🤖' };
             }
         } catch (error) {
-            console.error("All AI Keys failed:", error.message);
+            console.error("All AI Keys failed or TIMEOUT:", error.message);
+            // إذا كان الخطأ هو انتهاء الوقت، نعيد رمي الخطأ ليتم التقاطه في الوحدة الرئيسية
+            if (error.message === "TIMEOUT_LIMIT_REACHED") throw error;
         }
     }
 
@@ -441,7 +460,7 @@ async function extractWithAI(text) {
 }
 
 
-// (دالة extractWithRegex - لم يتم تغيير المنطق)
+// (دالة extractWithRegex - كما هي)
 function extractWithRegex(text) {
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\f/g, '\n').replace(/\u2028|\u2029/g, '\n');
     text = text.replace(/\n{2,}/g, '\n');
