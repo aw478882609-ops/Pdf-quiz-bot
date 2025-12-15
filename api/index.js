@@ -100,9 +100,12 @@ module.exports = async (req, res) => {
                 adminNotificationDetails = `السبب: نوع الملف ليس PDF.`;
                 global.processingFiles.delete(uniqueRequestId);
             } else {
-                // ⏳ رسالة تصبيرية أولى
-                const waitingMsg = await bot.sendMessage(chatId, '⏳ استلمت الملف.. جاري التحميل والتحليل، قد يستغرق ذلك بضع دقائق للملفات الكبيرة..');
+                // ⏳ رسالة البداية
+                const waitingMsg = await bot.sendMessage(chatId, '⏳ استلمت الملف.. جاري التحميل والتحليل..');
                 
+                // متغير لتخزين مؤقت "رسالة التصبير"
+                let patienceTimer = null;
+
                 try {
                     const fileLink = await bot.getFileLink(fileId);
                     const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
@@ -111,21 +114,31 @@ module.exports = async (req, res) => {
                     console.log(`📏 [BENCHMARK] Total Characters: ${pdfData.text.length}`);
 
                     // =========================================================
-                    // ⏱️ سباق الزمن: التحليل vs القنبلة الموقوتة (295 ثانية)
+                    // ⏱️ إعداد المؤقتات (رسالة التصبير + المهلة النهائية)
                     // =========================================================
-                    
-                    // 1. الوعد بالتحليل (العملية الأساسية)
+
+                    // 1. مؤقت رسالة "ما زلت أعمل" (بعد دقيقتين - 120 ثانية)
+                    patienceTimer = setTimeout(async () => {
+                        try {
+                            await bot.sendMessage(chatId, '✋ ما زلت أعمل على تحليل الملف، يبدو أنه كبير ومليء بالمعلومات.. شكراً لصبرك 🌹');
+                        } catch (e) { console.error("Failed to send patience msg", e); }
+                    }, 120000); 
+
+                    // 2. الوعد بالتحليل (العملية الأساسية)
                     const extractionPromise = extractQuestions(pdfData.text);
 
-                    // 2. الوعد بالانفجار (Timeout)
+                    // 3. الوعد بالانفجار (Timeout عند 295 ثانية)
                     const timeoutPromise = new Promise((_, reject) => {
                         setTimeout(() => {
                             reject(new Error("TIMEOUT_LIMIT_REACHED"));
-                        }, 295000); // 295 ثانية (قبل الـ 300 بقليل)
+                        }, 295000); 
                     });
 
-                    // السباق!
+                    // 🏁 السباق!
                     const extractionResult = await Promise.race([extractionPromise, timeoutPromise]);
+
+                    // ✅ وصلنا هنا يعني التحليل نجح قبل الوقت -> نلغي مؤقت التصبير فوراً
+                    clearTimeout(patienceTimer);
 
                     const questions = extractionResult.questions;
                     const extractionMethod = extractionResult.method;
@@ -144,7 +157,6 @@ module.exports = async (req, res) => {
                                            `🛠️ *طريقة الاستخراج:* ${extractionMethod}\n\n` +
                                            `اختر أين وكيف تريد إرسالها:`;
 
-                        // حذف رسالة الانتظار
                         try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
 
                         await bot.sendMessage(chatId, successMsg, {
@@ -162,14 +174,19 @@ module.exports = async (req, res) => {
                 } catch (error) {
                     console.error("Error processing PDF:", error);
                     
-                    // حذف رسالة الانتظار
+                    // نلغي مؤقت التصبير في حالة الخطأ أيضاً
+                    if (patienceTimer) clearTimeout(patienceTimer);
+
                     try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
 
                     // 🚨 التعامل مع خطأ انتهاء الوقت خصيصاً
                     if (error.message === "TIMEOUT_LIMIT_REACHED") {
-                        await bot.sendMessage(chatId, '⚠️ عذراً، عملية التحليل استغرقت وقتاً أطول من المسموح (5 دقائق). \n\n🔴 **السبب:** عدد صفحات/أحرف الملف ضخم جداً.\n✂️ **الحل:** يرجى تقسيم ملف الـ PDF إلى جزأين وإرسال كل جزء على حدة.');
-                        adminNotificationStatus = 'فشل (وقت) ⏱️';
-                        adminNotificationDetails = 'تم قطع العملية عند الثانية 295 بسبب حجم الملف.';
+                        // الرسالة النظيفة (بدون نجوم)
+                        await bot.sendMessage(chatId, '⚠️ عذراً، عملية التحليل استغرقت وقتاً أطول من المسموح (5 دقائق). \n\n🔴 السبب: عدد صفحات أو أحرف الملف ضخم جداً.\n✂️ الحل: يرجى تقسيم ملف الـ PDF إلى أجزاء أصغر وإرسال كل جزء على حدة.');
+                        
+                        // إشعار المشرف بحالة الـ Timeout
+                        adminNotificationStatus = 'فشل (انتهاء الوقت) ⏳';
+                        adminNotificationDetails = `تم قطع العملية عند الثانية 295 لأن الملف كان ضخماً جداً ولم ينته التحليل.`;
                     } else {
                         await bot.sendMessage(chatId, '⚠️ حدث خطأ أثناء معالجة الملف. يرجى التأكد من أن الملف سليم.');
                         adminNotificationStatus = 'فشل ❌';
@@ -185,7 +202,7 @@ module.exports = async (req, res) => {
             }
         }
 
-        // 2️⃣ التعامل مع الاختبارات (Quizzes)
+        // 2️⃣ التعامل مع الاختبارات (Quizzes) - (نفس الكود السابق تماماً)
         else if (update.message && update.message.poll) {
             const message = update.message;
             const poll = message.poll;
@@ -232,7 +249,7 @@ module.exports = async (req, res) => {
             }
         }
 
-        // 3️⃣ التعامل مع الضغط على الأزرار (Callback Query)
+        // 3️⃣ التعامل مع الضغط على الأزرار (Callback Query) - (نفس الكود السابق تماماً)
         else if (update.callback_query) {
              const callbackQuery = update.callback_query;
              const userId = callbackQuery.from.id;
@@ -297,7 +314,7 @@ module.exports = async (req, res) => {
              }
         }
         
-        // 4️⃣ التعامل مع الرسائل النصية
+        // 4️⃣ التعامل مع الرسائل النصية - (نفس الكود السابق تماماً)
         else if (update.message && update.message.text) {
             const message = update.message;
             const chatId = message.chat.id;
@@ -309,7 +326,6 @@ module.exports = async (req, res) => {
                 await bot.sendDocument(chatId, fileId, { caption: 'مرحباً بك! 👋\n\nإليك دليل المستخدم الشامل للبوت بصيغة PDF. 📖' });
             }
             else if (userState[userId] && userState[userId].awaiting === 'channel_id') {
-                // ... (نفس منطق التعامل مع القنوات كما هو) ...
                  const targetChatId = text.trim();
                  try {
                      const chatInfo = await bot.getChat(targetChatId);
@@ -366,7 +382,7 @@ async function extractQuestions(text) {
             }
         } catch (error) {
             console.error("All AI Keys failed or TIMEOUT:", error.message);
-            // إذا كان الخطأ هو انتهاء الوقت، نعيد رمي الخطأ ليتم التقاطه في الوحدة الرئيسية
+            // إعادة رمي خطأ الـ Timeout ليلتقطه الكود الرئيسي
             if (error.message === "TIMEOUT_LIMIT_REACHED") throw error;
         }
     }
@@ -575,4 +591,4 @@ function formatQuizText(quizData) {
     }
     if (quizData.explanation) formattedText += `\nExplanation: ${quizData.explanation}`;
     return formattedText;
-    }
+  }
