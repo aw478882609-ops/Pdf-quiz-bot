@@ -153,10 +153,10 @@ module.exports = async (req, res) => {
                             ]
                         };
                         
-                        const successMsg = `✅ تم العثور على ${questions.length} سؤالًا.\n` +
-                                           `🛠️ *طريقة الاستخراج:* ${extractionMethod}\n\n` +
-                                           `اختر أين وكيف تريد إرسالها:`;
-
+                       const successMsg = `✅ تم العثور على ${questions.length} سؤالًا.\n\n` +
+                   `🛠️ طريقة الاستخراج: ${extractionMethod}\n\n` +
+                   `اختر أين وكيف تريد إرسالها:`;
+                      
                         try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
 
                         await bot.sendMessage(chatId, successMsg, {
