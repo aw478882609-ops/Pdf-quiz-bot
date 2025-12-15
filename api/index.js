@@ -1,5 +1,3 @@
-// ==== بداية كود Vercel الكامل والصحيح (api/index.js) ====
-
 const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
 const axios = require('axios');
@@ -12,16 +10,27 @@ const userState = {};
 
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 
+// دالة مساعدة لاختيار مفتاح API عشوائي من القائمة
+function getRandomApiKey() {
+    const keysRaw = process.env.GEMINI_API_KEY || '';
+    // تقسيم المفاتيح بناءً على الفاصلة وحذف المسافات الزائدة
+    const keys = keysRaw.split(',').map(k => k.trim()).filter(k => k);
+    
+    if (keys.length === 0) return null;
+    
+    // اختيار مفتاح عشوائي
+    const randomKey = keys[Math.floor(Math.random() * keys.length)];
+    console.log(`🔑 Using API Key index: ${keys.indexOf(randomKey)} from ${keys.length} available keys.`);
+    return randomKey;
+}
+
 /*
- * دالة لإرسال إشعار للمشرف (لا ترسل شيئًا إذا كان المستخدم هو المشرف نفسه).
- * * ✨ النسخة المعدلة: تم إزالة parse_mode لضمان وصول الإشعار دائماً
- * حتى لو كانت رسائل الخطأ أو أسماء المستخدمين تحتوي على رموز خاصة.
+ * دالة لإرسال إشعار للمشرف
  */
 async function sendAdminNotification(status, user, fileId, details = '') {
-  // التحقق إذا كان المستخدم هو المشرف
   if (String(user.id) === ADMIN_CHAT_ID) {
     console.log("User is the admin. Skipping self-notification.");
-    return; // الخروج من الدالة فورًا
+    return; 
   }
 
   if (!ADMIN_CHAT_ID) {
@@ -29,7 +38,6 @@ async function sendAdminNotification(status, user, fileId, details = '') {
     return;
   }
 
-  // بناء نص الشرح (caption) - تنسيق نص عادي
   const userName = `${user.first_name || ''} ${user.last_name || ''}`.trim();
   const userUsername = user.username ? `@${user.username}` : 'لا يوجد';
   let captionText = `🔔 إشعار معالجة ملف 🔔\n\n`;
@@ -41,15 +49,11 @@ async function sendAdminNotification(status, user, fileId, details = '') {
   }
 
   try {
-    // الإرسال بدون parse_mode
     await bot.sendDocument(ADMIN_CHAT_ID, fileId, {
         caption: captionText
     });
   } catch (error) {
     console.error("Failed to send document notification to admin:", error.message);
-    
-    // محاولة إضافية (اختياري): إذا فشل إرسال الملف (ربما بسبب صلاحيات)، 
-    // يمكن إرسال إشعار نصي على الأقل.
     try {
         await bot.sendMessage(ADMIN_CHAT_ID, `⚠️ فشل إرسال إشعار الملف الأصلي. \n\n ${captionText}`);
     } catch (textError) {
@@ -57,6 +61,7 @@ async function sendAdminNotification(status, user, fileId, details = '') {
     }
   }
 }
+
 // وحدة التعامل مع الطلبات (النسخة النهائية والمصححة)
 module.exports = async (req, res) => {
     try {
@@ -66,6 +71,9 @@ module.exports = async (req, res) => {
         const body = await micro.json(req);
         const update = body;
 
+        // 🔍 تسجيل كل تحديث قادم من تليجرام لمعرفة سبب التكرار
+        console.log("⬇️ Incoming Telegram Update:", JSON.stringify(update, null, 2));
+
         // 1️⃣ التعامل مع الملفات المرسلة (PDF)
         if (update.message && update.message.document) {
             const message = update.message;
@@ -73,32 +81,34 @@ module.exports = async (req, res) => {
             const user = message.from;
             const fileId = message.document.file_id;
 
-// 🧠 كاش لمنع التحليل المكرر
-if (!global.processingFiles) global.processingFiles = new Set();
+            // 🧠 كاش لمنع التحليل المكرر
+            if (!global.processingFiles) global.processingFiles = new Set();
 
-// لو الملف جاري تحليله بالفعل → تجاهل الطلب
-if (global.processingFiles.has(fileId)) {
-  console.log(`⏳ الملف ${fileId} جاري تحليله بالفعل — تم تجاهل الطلب.`);
-  await bot.sendMessage(chatId, '⚙️ الملف ما زال قيد التحليل، يرجى الانتظار لحين الانتهاء...');
-  return res.status(200).send('Duplicate processing ignored.');
-}
+            // لو الملف جاري تحليله بالفعل → تجاهل الطلب
+            if (global.processingFiles.has(fileId)) {
+                console.warn(`⏳ الملف ${fileId} موجود بالفعل في قائمة المعالجة (Duplicate Request) — تم تجاهل الطلب.`);
+                // يمكننا إرسال رد "فارغ" للتأكيد لتليجرام أننا استلمنا الطلب الأول
+                return res.status(200).send('Duplicate processing ignored.');
+            }
 
-// علّم إن الملف جاري تحليله الآن
-global.processingFiles.add(fileId);
+            // علّم إن الملف جاري تحليله الآن
+            global.processingFiles.add(fileId);
 
             // متغيرات لتخزين الحالة النهائية للإشعار
             let adminNotificationStatus = '';
             let adminNotificationDetails = '';
 
-            const VERCEL_LIMIT_BYTES = 10 * 1024 * 1024;
+            const VERCEL_LIMIT_BYTES = 10 * 1024 * 1024; // 10 MB
             if (message.document.file_size > VERCEL_LIMIT_BYTES) {
                 await bot.sendMessage(chatId, `⚠️ عذرًا، حجم الملف يتجاوز الحد المسموح به (${'10 MB'}).`);
                 adminNotificationStatus = 'ملف مرفوض 🐘';
                 adminNotificationDetails = 'السبب: حجم الملف أكبر من 10 ميجا.';
+                global.processingFiles.delete(fileId); // تنظيف الكاش
             } else if (message.document.mime_type !== 'application/pdf') {
                 await bot.sendMessage(chatId, '⚠️ يرجى إرسال ملف بصيغة PDF فقط.');
                 adminNotificationStatus = 'ملف مرفوض 📄';
                 adminNotificationDetails = `السبب: نوع الملف ليس PDF (النوع المرسل: ${message.document.mime_type}).`;
+                global.processingFiles.delete(fileId); // تنظيف الكاش
             } else {
                 await bot.sendMessage(chatId, '📑 استلمت الملف، جاري تحليله واستخراج الأسئلة...');
                 try {
@@ -107,7 +117,10 @@ global.processingFiles.add(fileId);
                     const dataBuffer = Buffer.from(response.data);
                     const pdfData = await pdf(dataBuffer);
 
-                    const questions = await extractQuestions(pdfData.text);
+                    // استدعاء دالة الاستخراج المعدلة
+                    const extractionResult = await extractQuestions(pdfData.text);
+                    const questions = extractionResult.questions;
+                    const extractionMethod = extractionResult.method; // معرفة الطريقة (AI أو Regex)
 
                     if (questions.length > 0) {
                         userState[user.id] = { questions: questions };
@@ -119,11 +132,18 @@ global.processingFiles.add(fileId);
                                 [{ text: 'إرسال لقناة/مجموعة 📢', callback_data: 'send_to_channel' }]
                             ]
                         };
-                        await bot.sendMessage(chatId, `✅ تم العثور على ${questions.length} سؤالًا.\n\nاختر أين وكيف تريد إرسالها:`, {
+                        
+                        // رسالة النجاح مع توضيح الطريقة
+                        const successMsg = `✅ تم العثور على ${questions.length} سؤالًا.\n` +
+                                           `🛠️ *طريقة الاستخراج:* ${extractionMethod}\n\n` +
+                                           `اختر أين وكيف تريد إرسالها:`;
+
+                        await bot.sendMessage(chatId, successMsg, {
+                            parse_mode: 'Markdown',
                             reply_markup: keyboard
                         });
                         adminNotificationStatus = 'نجاح ✅';
-                        adminNotificationDetails = `تم العثور على ${questions.length} سؤال.`;
+                        adminNotificationDetails = `تم العثور على ${questions.length} سؤال باستخدام (${extractionMethod}).`;
                     } else {
                         await bot.sendMessage(chatId, '❌ لم أتمكن من العثور على أي أسئلة بصيغة صحيحة في الملف. تأكد أن النص داخل الملف قابل للنسخ وأنه يشبه إحدى الصيغ المدعومة في دليل المستخدم. للمساعدة اضغط /help');
                         adminNotificationStatus = 'نجاح (لكن فارغ) 🤷‍♂️';
@@ -134,7 +154,9 @@ global.processingFiles.add(fileId);
                     await bot.sendMessage(chatId, '⚠️ حدث خطأ أثناء معالجة الملف. يرجى التأكد من أن الملف سليم وغير تالف وتأكد أنه بصيغة pdf. للمساعدة اضغط /help');
                     adminNotificationStatus = 'فشل ❌';
                     adminNotificationDetails = `السبب: ${error.message}`;
-                  global.processingFiles.delete(fileId);
+                } finally {
+                    // ✅ إزالة الملف من الكاش في كل الحالات (نجاح أو فشل)
+                    global.processingFiles.delete(fileId);
                 }
             }
 
@@ -142,65 +164,59 @@ global.processingFiles.add(fileId);
             if (adminNotificationStatus) {
                 await sendAdminNotification(adminNotificationStatus, user, fileId, adminNotificationDetails);
             }
-          // ✅ إزالة الملف من الكاش بعد الانتهاء
-global.processingFiles.delete(fileId);
         }
 
-// 2️⃣ التعامل مع الاختبارات (Quizzes)
-else if (update.message && update.message.poll) {
-    const message = update.message;
-    const poll = message.poll;
+        // 2️⃣ التعامل مع الاختبارات (Quizzes)
+        else if (update.message && update.message.poll) {
+            const message = update.message;
+            const poll = message.poll;
 
-    if (poll.type !== 'quiz') {
-        return res.status(200).send('OK');
-    }
-
-    const chatId = message.chat.id;
-    const userId = message.from.id;
-    const quizData = {
-        question: poll.question,
-        options: poll.options.map(opt => opt.text),
-        correctOptionId: poll.correct_option_id,
-        explanation: poll.explanation || null
-    };
-
-    if (message.forward_date) {
-        // ✨ التحسين الجديد: التحقق من وجود إجابة في الاختبار المعاد توجيهه
-        if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
-            // إذا كانت الإجابة موجودة، يتم تحويل الاختبار إلى نص مباشرة
-            const formattedText = formatQuizText(quizData);
-            await bot.sendMessage(chatId, formattedText, {
-                reply_to_message_id: message.message_id // للرد على الرسالة الأصلية
-            });
-        } else {
-            // إذا لم تكن الإجابة موجودة، نطلب من المستخدم تحديدها (السلوك القديم)
-            if (!userState[userId] || !userState[userId].pending_polls) {
-                userState[userId] = { pending_polls: {} };
+            if (poll.type !== 'quiz') {
+                return res.status(200).send('OK');
             }
-            const previewText = formatQuizText({ ...quizData, correctOptionId: null });
-            const promptText = `${previewText}\n\n*يرجى تحديد الإجابة الصحيحة لهذا الاختبار:*`;
-            const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
-            const keyboardButtons = quizData.options.map((option, index) => ({
-                text: optionLetters[index] || (index + 1),
-                callback_data: `poll_answer_${index}`
-            }));
-            const interactiveMessage = await bot.sendMessage(chatId, promptText, {
-                parse_mode: 'Markdown',
-                reply_to_message_id: message.message_id,
-                reply_markup: { inline_keyboard: [keyboardButtons] }
-            });
-            userState[userId].pending_polls[interactiveMessage.message_id] = quizData;
+
+            const chatId = message.chat.id;
+            const userId = message.from.id;
+            const quizData = {
+                question: poll.question,
+                options: poll.options.map(opt => opt.text),
+                correctOptionId: poll.correct_option_id,
+                explanation: poll.explanation || null
+            };
+
+            if (message.forward_date) {
+                if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
+                    const formattedText = formatQuizText(quizData);
+                    await bot.sendMessage(chatId, formattedText, {
+                        reply_to_message_id: message.message_id
+                    });
+                } else {
+                    if (!userState[userId] || !userState[userId].pending_polls) {
+                        userState[userId] = { pending_polls: {} };
+                    }
+                    const previewText = formatQuizText({ ...quizData, correctOptionId: null });
+                    const promptText = `${previewText}\n\n*يرجى تحديد الإجابة الصحيحة لهذا الاختبار:*`;
+                    const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+                    const keyboardButtons = quizData.options.map((option, index) => ({
+                        text: optionLetters[index] || (index + 1),
+                        callback_data: `poll_answer_${index}`
+                    }));
+                    const interactiveMessage = await bot.sendMessage(chatId, promptText, {
+                        parse_mode: 'Markdown',
+                        reply_to_message_id: message.message_id,
+                        reply_markup: { inline_keyboard: [keyboardButtons] }
+                    });
+                    userState[userId].pending_polls[interactiveMessage.message_id] = quizData;
+                }
+            } else {
+                if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
+                    const formattedText = formatQuizText(quizData);
+                    await bot.sendMessage(chatId, formattedText);
+                } else {
+                    await bot.sendMessage(chatId, "⚠️ هذا الاختبار لا يحتوي على إجابة صحيحة، لا يمكن تحويله تلقائيًا.");
+                }
+            }
         }
-    } else {
-        // هذا الجزء يبقى كما هو للتعامل مع الاختبارات التي يتم إنشاؤها مباشرة
-        if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
-            const formattedText = formatQuizText(quizData);
-            await bot.sendMessage(chatId, formattedText);
-        } else {
-            await bot.sendMessage(chatId, "⚠️ هذا الاختبار لا يحتوي على إجابة صحيحة، لا يمكن تحويله تلقائيًا.");
-        }
-    }
-    }
 
         // 3️⃣ التعامل مع الضغط على الأزرار (Callback Query)
         else if (update.callback_query) {
@@ -269,7 +285,7 @@ else if (update.message && update.message.poll) {
             }
         }
         
-        // 4️⃣ التعامل مع الرسائل النصية (ID القناة، /help، إلخ)
+        // 4️⃣ التعامل مع الرسائل النصية
         else if (update.message && update.message.text) {
             const message = update.message;
             const userId = message.from.id;
@@ -341,55 +357,53 @@ else if (update.message && update.message.poll) {
 // ✨✨ === قسم الدوال الخاصة باستخراج الأسئلة === ✨✨
 // =================================================================
 
-// =================================================================
-// ✨✨ === قسم الدوال الخاصة باستخراج الأسئلة (الجزء المُعدّل) === ✨✨
-// =================================================================
-
 /**
- * ✨✨ === الدالة المُعدّلة: تبدأ بالذكاء الاصطناعي أولاً === ✨✨
- * @param {string} text The text extracted from the PDF.
- * @returns {Promise<Array>} A promise that resolves to an array of question objects.
+ * ✨✨ === الدالة المُعدّلة: ترجع الأسئلة + نوع الطريقة === ✨✨
+ * @param {string} text 
+ * @returns {Promise<{questions: Array, method: string}>}
  */
 async function extractQuestions(text) {
     let questions = [];
 
-    // لا نحاول استدعاء الذكاء الاصطناعي إذا كان النص قصيرًا جدًا
+    // محاولة الذكاء الاصطناعي
     if (text.trim().length > 50) {
         console.log("Attempting AI extraction first...");
         try {
-            // نبدأ بمحاولة الاستخراج عبر الـ AI
             questions = await extractWithAI(text);
+            if (questions.length > 0) {
+                return { questions: questions, method: 'AI 🤖' };
+            }
         } catch (error) {
             console.error("AI extraction failed:", error.message);
-            // لا نرجع خطأ، بل نترك الفرصة للطريقة الثانية
-            questions = []; 
+            // الاستمرار للنمط التقليدي
         }
     }
 
-    // إذا فشل الذكاء الاصطناعي أو لم يجد شيئًا، نلجأ إلى طريقة Regex كخطة بديلة
-    if (questions.length === 0) {
-        console.log("AI method failed or found 0 questions. Falling back to Regex extraction...");
-        try {
-            questions = extractWithRegex(text);
-        } catch (e) {
-            console.error("Regex extraction also failed with an error:", e);
-            return []; // هنا فشلت كلتا الطريقتين
+    // محاولة Regex
+    console.log("AI method failed or found 0 questions. Falling back to Regex extraction...");
+    try {
+        questions = extractWithRegex(text);
+        if (questions.length > 0) {
+            return { questions: questions, method: 'Regex 🧩' };
         }
+    } catch (e) {
+        console.error("Regex extraction also failed:", e);
     }
 
-    return questions;
+    return { questions: [], method: 'None ❌' };
 }
 
-// (دالة extractWithAI المُعدّلة لتشمل الشرح وترقيم الأسئلة)
+// (دالة extractWithAI المُعدّلة لدعم تعدد المفاتيح)
 async function extractWithAI(text) {
-    const apiKey = process.env.GEMINI_API_KEY;
+    // 🔑 استخدام دالة اختيار المفتاح العشوائي
+    const apiKey = getRandomApiKey();
+    
     if (!apiKey) {
-        console.log("GEMINI_API_KEY is not set. Skipping AI extraction.");
+        console.log("GEMINI_API_KEY is not set or empty. Skipping AI extraction.");
         return [];
     }
     const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
     
-    // ✨✨=== التعديل هنا: تحديث الـ prompt ليطلب رقم السؤال ===✨✨
     const prompt = `
     Analyze the following text and extract all multiple-choice questions.
     For each question, provide:
@@ -413,11 +427,6 @@ async function extractWithAI(text) {
         "question": "Which planet is known as the Red Planet?",
         "options": ["Earth", "Mars", "Jupiter", "Venus"],
         "correctAnswerIndex": 1
-      },
-      {
-        "question": "Which of these is not a primary color?",
-        "options": ["Red", "Blue", "Green", "Yellow"],
-        "correctAnswerIndex": 2
       }
     ]
     Here is the text to analyze:
@@ -443,27 +452,20 @@ async function extractWithAI(text) {
         }
 
         const aiResponseText = response.data.candidates[0].content.parts[0].text;
-        // تنظيف الاستجابة من أي علامات إضافية قد يضعها النموذج
         const cleanedJsonString = aiResponseText.replace(/```json/g, '').replace(/```/g, '').trim();
         let parsedQuestions = JSON.parse(cleanedJsonString);
         
-        // التحقق من أن الاستجابة هي مصفوفة وبها بيانات
         if (Array.isArray(parsedQuestions) && parsedQuestions.length > 0) {
-            // التحقق من أن كل عنصر يحتوي على الحقول الأساسية المطلوبة
             const areQuestionsValid = parsedQuestions.every(q => q.question && Array.isArray(q.options) && q.correctAnswerIndex !== undefined);
             if (areQuestionsValid) {
                 console.log(`AI successfully extracted ${parsedQuestions.length} questions.`);
-
-                // ✨✨=== التعديل الجديد: دمج رقم السؤال مع نص السؤال ===✨✨
                 parsedQuestions.forEach(q => {
                     if (q.questionNumber) {
                         q.question = `${q.questionNumber}) ${q.question}`;
-                        delete q.questionNumber; // حذف الخاصية بعد الدمج
+                        delete q.questionNumber;
                     }
                 });
-                
                 return parsedQuestions;
-
             } else {
                  console.error("AI response is an array, but some objects are missing required keys.");
                  return [];
@@ -474,10 +476,10 @@ async function extractWithAI(text) {
         console.error("Error calling or parsing Gemini API response:", error.response ? error.response.data : error.message);
         throw new Error("Failed to get a valid response from AI.");
     }
-          }
+}
 
 
-// (دالة extractWithRegex تبقى كما هي بدون تغيير)
+// (دالة extractWithRegex - لم يتم تغيير المنطق، فقط تم وضعها هنا للاكتمال)
 function extractWithRegex(text) {
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\f/g, '\n').replace(/\u2028|\u2029/g, '\n');
     text = text.replace(/\n{2,}/g, '\n');
@@ -511,11 +513,7 @@ function extractWithRegex(text) {
         for (let i = 0; i < roman.length; i++) {
             const current = map[roman[i].toUpperCase()];
             const next = i + 1 < roman.length ? map[roman[i + 1].toUpperCase()] : 0;
-            if (next > current) {
-                num -= current;
-            } else {
-                num += current;
-            }
+            if (next > current) { num -= current; } else { num += current; }
         }
         return num;
     }
@@ -636,7 +634,7 @@ function extractWithRegex(text) {
         }
     }
     return questions;
-    }
+}
 
 function formatQuizText(quizData) {
     let formattedText = ` ${quizData.question}\n\n`;
