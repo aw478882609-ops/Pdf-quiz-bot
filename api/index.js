@@ -10,20 +10,6 @@ const userState = {};
 
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 
-// دالة مساعدة لاختيار مفتاح API عشوائي من القائمة
-function getRandomApiKey() {
-    const keysRaw = process.env.GEMINI_API_KEY || '';
-    // تقسيم المفاتيح بناءً على الفاصلة وحذف المسافات الزائدة
-    const keys = keysRaw.split(',').map(k => k.trim()).filter(k => k);
-    
-    if (keys.length === 0) return null;
-    
-    // اختيار مفتاح عشوائي
-    const randomKey = keys[Math.floor(Math.random() * keys.length)];
-    console.log(`🔑 Using API Key index: ${keys.indexOf(randomKey)} from ${keys.length} available keys.`);
-    return randomKey;
-}
-
 /*
  * دالة لإرسال إشعار للمشرف
  */
@@ -87,7 +73,6 @@ module.exports = async (req, res) => {
             // لو الملف جاري تحليله بالفعل → تجاهل الطلب
             if (global.processingFiles.has(fileId)) {
                 console.warn(`⏳ الملف ${fileId} موجود بالفعل في قائمة المعالجة (Duplicate Request) — تم تجاهل الطلب.`);
-                // يمكننا إرسال رد "فارغ" للتأكيد لتليجرام أننا استلمنا الطلب الأول
                 return res.status(200).send('Duplicate processing ignored.');
             }
 
@@ -374,7 +359,7 @@ async function extractQuestions(text) {
                 return { questions: questions, method: 'AI 🤖' };
             }
         } catch (error) {
-            console.error("AI extraction failed:", error.message);
+            console.error("All AI Keys failed:", error.message);
             // الاستمرار للنمط التقليدي
         }
     }
@@ -393,17 +378,17 @@ async function extractQuestions(text) {
     return { questions: [], method: 'None ❌' };
 }
 
-// (دالة extractWithAI المُعدّلة لدعم تعدد المفاتيح)
+// (دالة extractWithAI المُعدّلة لدعم تعدد المفاتيح بالتتابع)
 async function extractWithAI(text) {
-    // 🔑 استخدام دالة اختيار المفتاح العشوائي
-    const apiKey = getRandomApiKey();
+    // 🔑 جلب المفاتيح وتقسيمها
+    const keysRaw = process.env.GEMINI_API_KEY || '';
+    const keys = keysRaw.split(',').map(k => k.trim()).filter(k => k);
     
-    if (!apiKey) {
+    if (keys.length === 0) {
         console.log("GEMINI_API_KEY is not set or empty. Skipping AI extraction.");
         return [];
     }
-    const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-    
+
     const prompt = `
     Analyze the following text and extract all multiple-choice questions.
     For each question, provide:
@@ -441,41 +426,53 @@ async function extractWithAI(text) {
         }]
     };
 
-    try {
-        const response = await axios.post(url, payload, {
-            headers: { 'Content-Type': 'application/json' }
-        });
+    // 🔁 الحلقة التكرارية: جرب المفتاح الأول، إذا فشل جرب الثاني...
+    for (let i = 0; i < keys.length; i++) {
+        const apiKey = keys[i];
+        const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
 
-        if (!response.data.candidates || response.data.candidates.length === 0 || !response.data.candidates[0].content) {
-            console.error("AI responded but with no valid content or candidates.");
-            return [];
-        }
+        try {
+            console.log(`🔄 Trying API Key #${i + 1}...`);
+            const response = await axios.post(url, payload, {
+                headers: { 'Content-Type': 'application/json' }
+            });
 
-        const aiResponseText = response.data.candidates[0].content.parts[0].text;
-        const cleanedJsonString = aiResponseText.replace(/```json/g, '').replace(/```/g, '').trim();
-        let parsedQuestions = JSON.parse(cleanedJsonString);
-        
-        if (Array.isArray(parsedQuestions) && parsedQuestions.length > 0) {
-            const areQuestionsValid = parsedQuestions.every(q => q.question && Array.isArray(q.options) && q.correctAnswerIndex !== undefined);
-            if (areQuestionsValid) {
-                console.log(`AI successfully extracted ${parsedQuestions.length} questions.`);
-                parsedQuestions.forEach(q => {
-                    if (q.questionNumber) {
-                        q.question = `${q.questionNumber}) ${q.question}`;
-                        delete q.questionNumber;
-                    }
-                });
-                return parsedQuestions;
-            } else {
-                 console.error("AI response is an array, but some objects are missing required keys.");
-                 return [];
+            if (!response.data.candidates || response.data.candidates.length === 0 || !response.data.candidates[0].content) {
+                console.error(`⚠️ Key #${i + 1} worked but returned no valid content.`);
+                // نعتبره فشل ونكمل للمفتاح التالي
+                continue; 
             }
+
+            const aiResponseText = response.data.candidates[0].content.parts[0].text;
+            const cleanedJsonString = aiResponseText.replace(/```json/g, '').replace(/```/g, '').trim();
+            let parsedQuestions = JSON.parse(cleanedJsonString);
+            
+            if (Array.isArray(parsedQuestions) && parsedQuestions.length > 0) {
+                const areQuestionsValid = parsedQuestions.every(q => q.question && Array.isArray(q.options) && q.correctAnswerIndex !== undefined);
+                if (areQuestionsValid) {
+                    console.log(`✅ Success with Key #${i + 1}: Extracted ${parsedQuestions.length} questions.`);
+                    parsedQuestions.forEach(q => {
+                        if (q.questionNumber) {
+                            q.question = `${q.questionNumber}) ${q.question}`;
+                            delete q.questionNumber;
+                        }
+                    });
+                    // 🎉 نجحنا! نرجع النتيجة ونوقف الحلقة
+                    return parsedQuestions;
+                }
+            }
+            console.warn(`⚠️ Key #${i + 1} response format was invalid. Trying next...`);
+
+        } catch (error) {
+            // ❌ تسجيل الخطأ والانتقال للمفتاح التالي في الدورة القادمة
+            const errorMsg = error.response ? JSON.stringify(error.response.data) : error.message;
+            console.error(`❌ Key #${i + 1} Failed: ${errorMsg}`);
+            console.log("➡️ Switching to next key...");
         }
-        return [];
-    } catch (error) {
-        console.error("Error calling or parsing Gemini API response:", error.response ? error.response.data : error.message);
-        throw new Error("Failed to get a valid response from AI.");
     }
+
+    // إذا وصلنا هنا، معناه جربنا كل المفاتيح وكلها فشلت
+    throw new Error("All provided API keys failed.");
 }
 
 
