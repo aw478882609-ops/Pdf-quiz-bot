@@ -11,7 +11,8 @@ const userState = {};
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 
 // دالة لإرسال إشعار للمشرف
-async function sendAdminNotification(status, user, fileId, details = '') {
+// دالة لإرسال إشعار للمشرف (معدلة لتشمل طريقة الاستخراج)
+async function sendAdminNotification(status, user, fileId, details = '', method = 'غير محدد ❓') {
   if (String(user.id) === ADMIN_CHAT_ID) {
     console.log("User is the admin. Skipping self-notification.");
     return; 
@@ -24,12 +25,15 @@ async function sendAdminNotification(status, user, fileId, details = '') {
 
   const userName = `${user.first_name || ''} ${user.last_name || ''}`.trim();
   const userUsername = user.username ? `@${user.username}` : 'لا يوجد';
+  
   let captionText = `🔔 إشعار معالجة ملف 🔔\n\n`;
-  captionText += `الحالة: ${status}\n\n`;
-  captionText += `من المستخدم: ${userName} (${userUsername})\n\n`;
+  captionText += `الحالة: ${status}\n`;
+  captionText += `🛠️ طريقة الاستخراج: ${method}\n\n`; // ✅ تمت الإضافة هنا
+  captionText += `من المستخدم: ${userName} (${userUsername})\n`;
   captionText += `ID المستخدم: ${user.id}\n\n`;
+  
   if (details) {
-    captionText += `تفاصيل: ${details}\n`;
+    captionText += `📝 تفاصيل: ${details}\n`;
   }
 
   try {
@@ -42,7 +46,7 @@ async function sendAdminNotification(status, user, fileId, details = '') {
         console.error("Failed to send even a text notification to admin:", textError.message);
     }
   }
-}
+    }
 
 // وحدة التعامل مع الطلبات
 module.exports = async (req, res) => {
