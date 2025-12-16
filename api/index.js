@@ -1,4 +1,4 @@
-// ==== بداية كود Vercel الكامل (api/index.js) - Version 9.0 (Original Prompt Restored) ====
+// ==== بداية كود Vercel الكامل (api/index.js) - Version 11.0 (Maintenance + Short Text Check) ====
 
 const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
@@ -11,6 +11,11 @@ const bot = new TelegramBot(token);
 const userState = {};
 
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
+
+// متغير عالمي لحالة الصيانة (يتم حفظه في الذاكرة المؤقتة للسيرفر)
+if (global.isMaintenanceMode === undefined) {
+    global.isMaintenanceMode = false;
+}
 
 // دالة مساعدة للتأخير
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -60,6 +65,38 @@ module.exports = async (req, res) => {
             if (timeDiff > 20) return res.status(200).send('Stale request ignored.');
         }
 
+        // =========================================================
+        // 🔧 أوامر الصيانة (للأدمن فقط - يتم التحقق منها أولاً)
+        // =========================================================
+        if (update.message && update.message.text) {
+            const text = update.message.text.trim();
+            const userId = String(update.message.from.id);
+
+            if (userId === ADMIN_CHAT_ID) {
+                if (text === '/repairon') {
+                    global.isMaintenanceMode = true;
+                    await bot.sendMessage(userId, '🛠️ تم تفعيل وضع الصيانة. لن يستقبل البوت ملفات من المستخدمين.');
+                    return res.status(200).send('Maintenance ON');
+                }
+                if (text === '/repairoff') {
+                    global.isMaintenanceMode = false;
+                    await bot.sendMessage(userId, '✅ تم إيقاف وضع الصيانة. البوت يعمل بشكل طبيعي.');
+                    return res.status(200).send('Maintenance OFF');
+                }
+            }
+        }
+
+        // =========================================================
+        // 🚧 التحقق من وضع الصيانة (للمستخدمين العاديين)
+        // =========================================================
+        const userId = update.message ? String(update.message.from.id) : null;
+        if (global.isMaintenanceMode && userId !== ADMIN_CHAT_ID) {
+            if (update.message) {
+                await bot.sendMessage(update.message.chat.id, '⚠️ البوت في وضع الصيانة حالياً لحل بعض المشاكل التقنية وتحسين الأداء.\n\nيرجى المحاولة لاحقاً. ⏳');
+            }
+            return res.status(200).send('Maintenance Mode Active');
+        }
+
         // 1️⃣ التعامل مع الملفات (PDF)
         if (update.message && update.message.document) {
             const message = update.message;
@@ -102,7 +139,7 @@ module.exports = async (req, res) => {
                     console.log(`📏 Chars: ${pdfData.text.length}`);
 
                     patienceTimer = setTimeout(async () => {
-                        try { await bot.sendMessage(chatId, '✋ الملف كبير ومليء بالمعلومات، ما زلت أعمل عليه... شكراً لصبرك 🌹'); } catch (e) {}
+                        try { await bot.sendMessage(chatId, '✋ ما زلت أعمل على تحليل الملف... شكراً لصبرك 🌹'); } catch (e) {}
                     }, 120000); 
 
                     // الاستخراج
@@ -140,12 +177,17 @@ module.exports = async (req, res) => {
                     } else {
                         try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
                         
-                        const failMessage = `❌ لم أتمكن من استخراج أسئلة.\n\n` +
-                                            `📋 التقرير:\n` + 
-                                            `➖ ${extractionMethodReport}`; 
-
-                        await bot.sendMessage(chatId, failMessage);
-                        adminNotificationStatus = 'فشل (0 أسئلة) ❌';
+                        // 🛑 التعامل مع حالة النص القصير جداً بشكل خاص
+                        if (extractionResult.failureReport === "SHORT_TEXT") {
+                            await bot.sendMessage(chatId, '❌ النص في الملف قصير جداً (أقل من 50 حرف).\n\n⚠️ يرجى التأكد من أن الملف يحتوي على نصوص قابلة للنسخ، وليس صوراً (Scanned PDF).');
+                            adminNotificationStatus = 'فشل (نص قصير) 📝';
+                        } else {
+                            const failMessage = `❌ لم أتمكن من استخراج أسئلة.\n\n` +
+                                                `📋 التقرير:\n` + 
+                                                `➖ ${extractionMethodReport}`; 
+                            await bot.sendMessage(chatId, failMessage);
+                            adminNotificationStatus = 'فشل (0 أسئلة) ❌';
+                        }
                     }
 
                 } catch (error) {
@@ -286,6 +328,9 @@ module.exports = async (req, res) => {
             const text = message.text;
             const userId = message.from.id;
 
+            // تجاهل أوامر الصيانة هنا لأننا تعاملنا معها في البداية
+            if (text === '/repairon' || text === '/repairoff') return res.status(200).send('OK');
+
             if (text.toLowerCase() === '/help') {
                 const fileId = 'BQACAgQAAxkBAAE72dRo2-EHmbty7PivB2ZsIz1WKkAXXgAC5BsAAtF24VLmLAPbHKW4IDYE';
                 await bot.sendDocument(chatId, fileId, { caption: 'دليل الاستخدام 📖' });
@@ -330,7 +375,7 @@ module.exports = async (req, res) => {
 };
 
 // =================================================================
-// ✨✨ === منطق الاستخراج الذكي (Logic Version 9.0) === ✨✨
+// ✨✨ === منطق الاستخراج الذكي (Logic Version 11.0) === ✨✨
 // =================================================================
 
 async function extractQuestions(text) {
@@ -338,15 +383,14 @@ async function extractQuestions(text) {
     let failureReason = '';
 
     // 1️⃣ الذكاء الاصطناعي (أولوية)
-    if (text.trim().length > 50) {
+    // ✅ هنا تم تفعيل شرط الـ 50 حرف مرة أخرى كما طلبت
+    if (text && text.trim().length > 50) {
         console.log("Attempting AI extraction...");
         try {
             const aiResult = await extractWithAI(text);
             return { 
                 questions: aiResult.questions, 
-                // نص يظهر للمستخدم
                 method: `AI 🤖 (${aiResult.modelDisplay})`,
-                // نص يظهر للأدمن
                 adminDetails: `✅ النجاح باستخدام:\n- النموذج: ${aiResult.modelDisplay}\n- المفتاح: Key #${aiResult.keyIndex}`
             };
         } catch (error) {
@@ -354,10 +398,17 @@ async function extractQuestions(text) {
             failureReason = error.message.replace("Report: ", "");
         }
     } else {
-        failureReason = "Text too short";
+        // إذا كان النص قصيراً جداً، نرجع خطأ خاص
+        console.log("Text too short.");
+        return { 
+            questions: [], 
+            method: 'مرفوض (قصير)',
+            failureReport: 'SHORT_TEXT',
+            adminDetails: 'تم رفض الملف لأن عدد الأحرف أقل من 50.'
+        };
     }
 
-    // 2️⃣ Regex (خطة بديلة)
+    // 2️⃣ Regex (خطة بديلة إذا فشل AI فقط، وليس إذا كان النص قصيراً)
     console.log("Falling back to Regex...");
     try {
         questions = extractWithRegex(text);
@@ -397,7 +448,7 @@ async function extractWithAI(text) {
         }
     ];
 
-    // ✅✅ تم استعادة البرومبت الأصلي الخاص بك حرفياً ✅✅
+    // ✅ البرومبت الأصلي
     const prompt = `
     Analyze the following text and extract all multiple-choice questions.
     For each question, provide:
@@ -550,4 +601,4 @@ function formatQuizText(quizData) {
     }
     if (quizData.explanation) formattedText += `\nExplanation: ${quizData.explanation}`;
     return formattedText;
-}
+  }
