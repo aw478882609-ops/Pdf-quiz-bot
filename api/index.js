@@ -11,12 +11,7 @@ const userState = {};
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 
 // دالة لإرسال إشعار للمشرف
-// دالة لإرسال إشعار للمشرف (معدلة لتشمل طريقة الاستخراج)
-// دالة لإرسال إشعار للمشرف (معدلة لتشمل طريقة الاستخراج وحالات الفشل)
-// =================================================================
-// 🔔 دالة لإرسال إشعار للمشرف (معدلة لتوضيح طريقة التحليل في كل الحالات)
-// =================================================================
-async function sendAdminNotification(status, user, fileId, details = '', method = 'غير محدد ❓') {
+async function sendAdminNotification(status, user, fileId, details = '') {
   if (String(user.id) === ADMIN_CHAT_ID) {
     console.log("User is the admin. Skipping self-notification.");
     return; 
@@ -29,15 +24,12 @@ async function sendAdminNotification(status, user, fileId, details = '', method 
 
   const userName = `${user.first_name || ''} ${user.last_name || ''}`.trim();
   const userUsername = user.username ? `@${user.username}` : 'لا يوجد';
-   
   let captionText = `🔔 إشعار معالجة ملف 🔔\n\n`;
-  captionText += `الحالة: ${status}\n`;
-  captionText += `🛠️ طريقة التحليل المستخدمة: ${method}\n\n`; // ✅ يظهر هنا سواء فشل أو نجح
-  captionText += `من المستخدم: ${userName} (${userUsername})\n`;
+  captionText += `الحالة: ${status}\n\n`;
+  captionText += `من المستخدم: ${userName} (${userUsername})\n\n`;
   captionText += `ID المستخدم: ${user.id}\n\n`;
-   
   if (details) {
-    captionText += `📝 تفاصيل: ${details}\n`;
+    captionText += `تفاصيل: ${details}\n`;
   }
 
   try {
@@ -45,16 +37,14 @@ async function sendAdminNotification(status, user, fileId, details = '', method 
   } catch (error) {
     console.error("Failed to send document notification to admin:", error.message);
     try {
-        await bot.sendMessage(ADMIN_CHAT_ID, `⚠️ فشل إرسال إشعار الملف الأصلي (قد يكون محذوفاً أو كبيراً).\n\n${captionText}`);
+        await bot.sendMessage(ADMIN_CHAT_ID, `⚠️ فشل إرسال إشعار الملف الأصلي. \n\n ${captionText}`);
     } catch (textError) {
         console.error("Failed to send even a text notification to admin:", textError.message);
     }
   }
 }
 
-// =================================================================
-// ⚙️ وحدة التعامل مع الطلبات
-// =================================================================
+// وحدة التعامل مع الطلبات
 module.exports = async (req, res) => {
     try {
         if (req.method !== 'POST') {
@@ -97,26 +87,23 @@ module.exports = async (req, res) => {
 
             let adminNotificationStatus = '';
             let adminNotificationDetails = '';
-            // ✅ متغير لتخزين الطريقة، قيمته الافتراضية "قيد التحليل"
-            let extractionMethodReport = 'جاري التحليل... ⏳'; 
 
             const VERCEL_LIMIT_BYTES = 10 * 1024 * 1024; // 10 MB
             if (message.document.file_size > VERCEL_LIMIT_BYTES) {
                 await bot.sendMessage(chatId, `⚠️ عذرًا، حجم الملف يتجاوز الحد المسموح به (${'10 MB'}).`);
                 adminNotificationStatus = 'ملف مرفوض 🐘';
                 adminNotificationDetails = 'السبب: حجم الملف أكبر من 10 ميجا.';
-                extractionMethodReport = 'لم يتم الفحص (حجم كبير)';
                 global.processingFiles.delete(uniqueRequestId);
             } else if (message.document.mime_type !== 'application/pdf') {
                 await bot.sendMessage(chatId, '⚠️ يرجى إرسال ملف بصيغة PDF فقط.');
                 adminNotificationStatus = 'ملف مرفوض 📄';
                 adminNotificationDetails = `السبب: نوع الملف ليس PDF.`;
-                extractionMethodReport = 'لم يتم الفحص (صيغة خاطئة)';
                 global.processingFiles.delete(uniqueRequestId);
             } else {
                 // ⏳ رسالة البداية
                 const waitingMsg = await bot.sendMessage(chatId, '⏳ استلمت الملف.. جاري التحميل والتحليل..');
                 
+                // متغير لتخزين مؤقت "رسالة التصبير"
                 let patienceTimer = null;
 
                 try {
@@ -126,33 +113,37 @@ module.exports = async (req, res) => {
                     const pdfData = await pdf(dataBuffer);
                     console.log(`📏 [BENCHMARK] Total Characters: ${pdfData.text.length}`);
 
-                    // إعداد المؤقتات
+                    // =========================================================
+                    // ⏱️ إعداد المؤقتات (رسالة التصبير + المهلة النهائية)
+                    // =========================================================
+
+                    // 1. مؤقت رسالة "ما زلت أعمل" (بعد دقيقتين - 120 ثانية)
                     patienceTimer = setTimeout(async () => {
                         try {
                             await bot.sendMessage(chatId, '✋ ما زلت أعمل على تحليل الملف، يبدو أنه كبير ومليء بالمعلومات.. شكراً لصبرك 🌹');
                         } catch (e) { console.error("Failed to send patience msg", e); }
                     }, 120000); 
 
+                    // 2. الوعد بالتحليل (العملية الأساسية)
                     const extractionPromise = extractQuestions(pdfData.text);
 
+                    // 3. الوعد بالانفجار (Timeout عند 295 ثانية)
                     const timeoutPromise = new Promise((_, reject) => {
                         setTimeout(() => {
                             reject(new Error("TIMEOUT_LIMIT_REACHED"));
                         }, 295000); 
                     });
 
-                    // 🏁 تنفيذ الاستخراج
+                    // 🏁 السباق!
                     const extractionResult = await Promise.race([extractionPromise, timeoutPromise]);
 
+                    // ✅ وصلنا هنا يعني التحليل نجح قبل الوقت -> نلغي مؤقت التصبير فوراً
                     clearTimeout(patienceTimer);
 
                     const questions = extractionResult.questions;
-                    
-                    // ✅ هنا النقطة المهمة: نأخذ الطريقة سواء نجحنا أم فشلنا
-                    extractionMethodReport = extractionResult.method; 
+                    const extractionMethod = extractionResult.method;
 
                     if (questions.length > 0) {
-                        // حالة النجاح
                         userState[user.id] = { questions: questions };
                         const keyboard = {
                             inline_keyboard: [
@@ -163,9 +154,9 @@ module.exports = async (req, res) => {
                         };
                         
                        const successMsg = `✅ تم العثور على ${questions.length} سؤالًا.\n\n` +
-                   `🛠️ طريقة الاستخراج: ${extractionMethodReport}\n\n` +
+                   `🛠️ طريقة الاستخراج: ${extractionMethod}\n\n` +
                    `اختر أين وكيف تريد إرسالها:`;
-                       
+                      
                         try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
 
                         await bot.sendMessage(chatId, successMsg, {
@@ -173,33 +164,32 @@ module.exports = async (req, res) => {
                             reply_markup: keyboard
                         });
                         adminNotificationStatus = 'نجاح ✅';
-                        adminNotificationDetails = `تم العثور على ${questions.length} سؤال.`;
-
+                        adminNotificationDetails = `تم العثور على ${questions.length} سؤال باستخدام (${extractionMethod}).`;
                     } else {
-                        // حالة الفشل (0 أسئلة) - ولكننا نعرف الطريقة التي حاول بها
                         try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
                         await bot.sendMessage(chatId, '❌ لم أتمكن من العثور على أي أسئلة بصيغة صحيحة في الملف.');
-                        
-                        adminNotificationStatus = 'فشل (0 أسئلة) ❌';
-                        // سيتم إرسال extractionMethodReport التي تحتوي على (AI 🤖) أو (Regex 🧩) أو (None ❌)
-                        adminNotificationDetails = `تمت المحاولة ولكن لم يتم العثور على أسئلة مطابقة.`;
+                        adminNotificationStatus = 'نجاح (لكن فارغ) 🤷‍♂️';
+                        adminNotificationDetails = 'تمت معالجة الملف لكن لم يتم العثور على أسئلة.';
                     }
-
                 } catch (error) {
                     console.error("Error processing PDF:", error);
                     
+                    // نلغي مؤقت التصبير في حالة الخطأ أيضاً
                     if (patienceTimer) clearTimeout(patienceTimer);
+
                     try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
 
+                    // 🚨 التعامل مع خطأ انتهاء الوقت خصيصاً
                     if (error.message === "TIMEOUT_LIMIT_REACHED") {
+                        // الرسالة النظيفة (بدون نجوم)
                         await bot.sendMessage(chatId, '⚠️ عذراً، عملية التحليل استغرقت وقتاً أطول من المسموح (5 دقائق). \n\n🔴 السبب: عدد صفحات أو أحرف الملف ضخم جداً.\n✂️ الحل: يرجى تقسيم ملف الـ PDF إلى أجزاء أصغر وإرسال كل جزء على حدة.');
                         
+                        // إشعار المشرف بحالة الـ Timeout
                         adminNotificationStatus = 'فشل (انتهاء الوقت) ⏳';
-                        adminNotificationDetails = `انقطع الاتصال عند 295 ثانية.`;
-                        extractionMethodReport = 'AI (غالبًا - بسبب الوقت)'; // تحديث الطريقة يدوياً في حالة التايم اوت
+                        adminNotificationDetails = `تم قطع العملية عند الثانية 295 لأن الملف كان ضخماً جداً ولم ينته التحليل.`;
                     } else {
                         await bot.sendMessage(chatId, '⚠️ حدث خطأ أثناء معالجة الملف. يرجى التأكد من أن الملف سليم.');
-                        adminNotificationStatus = 'فشل (خطأ تقني) 💥';
+                        adminNotificationStatus = 'فشل ❌';
                         adminNotificationDetails = `السبب: ${error.message}`;
                     }
                 } finally {
@@ -207,14 +197,11 @@ module.exports = async (req, res) => {
                 }
             }
 
-            // ✅ إرسال الإشعار للأدمن متضمناً الحالة والطريقة
             if (adminNotificationStatus) {
-                await sendAdminNotification(adminNotificationStatus, user, fileId, adminNotificationDetails, extractionMethodReport);
+                await sendAdminNotification(adminNotificationStatus, user, fileId, adminNotificationDetails);
             }
         }
 
-
-        
         // 2️⃣ التعامل مع الاختبارات (Quizzes) - (نفس الكود السابق تماماً)
         else if (update.message && update.message.poll) {
             const message = update.message;
