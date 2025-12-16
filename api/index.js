@@ -1,186 +1,202 @@
-// ==== كود Vercel الكامل (api/index.js) - Version 12.0 (Controller Only) ====
+// ==== كود Vercel الكامل (api/index.js) - Version 19.0 (Controller + Supabase) ====
 
 const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
 const axios = require('axios');
 const micro = require('micro');
 
-// إعدادات البوت
+// ⚙️ الإعدادات (Environment Variables)
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const bot = new TelegramBot(token);
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
-const GAS_WEB_APP_URL = process.env.GAS_WEB_APP_URL; // رابط مشروع GAS
+const GAS_WEB_APP_URL = process.env.GAS_WEB_APP_URL;
 
-// ذاكرة مؤقتة (Global Cache) لحفظ النصوص ريثما يختار المستخدم الوجهة
-if (!global.userState) {
-    global.userState = {};
+// 🗄️ إعدادات Supabase
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
+
+// 🧠 الذاكرة المؤقتة (لإدارة القنوات وحالة الصيانة)
+if (!global.userState) global.userState = {};
+if (global.isMaintenanceMode === undefined) global.isMaintenanceMode = false;
+
+// =========================================================
+// 🗄️ دوال Supabase
+// =========================================================
+
+// تسجيل أو تحديث بيانات المستخدم
+async function upsertUser(user) {
+    if (!SUPABASE_URL || !SUPABASE_KEY) return;
+    try {
+        await axios.post(`${SUPABASE_URL}/rest/v1/users`, {
+            telegram_id: user.id,
+            full_name: `${user.first_name} ${user.last_name || ''}`.trim(),
+            username: user.username || null,
+            last_active: new Date().toISOString()
+        }, {
+            headers: { 
+                'apikey': SUPABASE_KEY, 
+                'Authorization': `Bearer ${SUPABASE_KEY}`, 
+                'Content-Type': 'application/json', 
+                'Prefer': 'resolution=merge-duplicates' 
+            }
+        });
+        console.log(`✅ User ${user.id} logged.`);
+    } catch (e) { console.error("Supabase User Error:", e.message); }
 }
 
-// وضع الصيانة
-if (global.isMaintenanceMode === undefined) {
-    global.isMaintenanceMode = false;
+// تسجيل الاستهلاك (Logs)
+async function logUsage(userId, questionCount, modelName, status = 'success') {
+    if (!SUPABASE_URL || !SUPABASE_KEY) return;
+    try {
+        await axios.post(`${SUPABASE_URL}/rest/v1/usage_logs`, {
+            telegram_id: userId,
+            questions_count: parseInt(questionCount) || 0,
+            model: modelName || 'unknown',
+            status: status,
+            created_at: new Date().toISOString()
+        }, {
+            headers: { 
+                'apikey': SUPABASE_KEY, 
+                'Authorization': `Bearer ${SUPABASE_KEY}`, 
+                'Content-Type': 'application/json' 
+            }
+        });
+    } catch (e) { console.error("Supabase Log Error:", e.message); }
 }
 
-// دالة مساعدة لإرسال البيانات إلى Google Apps Script
-// نستخدم timeout قصير (1000ms) لأننا لا نريد انتظار انتهاء GAS من التحليل (الذي يستغرق دقائق)
-// نريد فقط التأكد من أن GAS استلم الطلب.
+// =========================================================
+// ⚡ دالة الإرسال السريع لـ GAS (Fire & Forget)
+// =========================================================
 async function sendToGasAndForget(payload) {
+    // نستخدم Timeout قصير جداً (1.5 ثانية)
+    // الهدف: تسليم البيانات لـ GAS وإغلاق اتصال Vercel فوراً
     try {
         await axios.post(GAS_WEB_APP_URL, payload, { timeout: 1500 });
-        console.log("✅ Request sent to GAS");
     } catch (error) {
-        // نتجاهل خطأ Timeout لأن هذا هو المطلوب (أن نغلق الاتصال بسرعة)
-        if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
-            console.log("✅ Request sent to GAS (Connection closed early as planned)");
-        } else {
-            console.error("❌ Failed to send to GAS:", error.message);
+        // نتجاهل أخطاء الوقت (Timeout) لأن هذا متوقع ومطلوب
+        if (error.code !== 'ECONNABORTED' && !error.message.includes('timeout')) {
+            console.error("❌ GAS Connection Error:", error.message);
         }
     }
 }
 
+// =========================================================
+// 🎮 المعالج الرئيسي (Main Handler)
+// =========================================================
 module.exports = async (req, res) => {
     try {
-        if (req.method !== 'POST') {
-            return res.status(405).send('Method Not Allowed');
-        }
-        const body = await micro.json(req);
-        
-        // التعامل مع التحديثات (Updates)
-        const update = body;
+        if (req.method !== 'POST') return res.status(405).send('Method Not Allowed');
+        const update = await micro.json(req);
 
-        // =========================================================
-        // 🔧 أوامر الصيانة (للأدمن فقط)
-        // =========================================================
-        if (update.message && update.message.text) {
-            const userId = String(update.message.from.id);
-            const text = update.message.text.trim();
-            if (userId === ADMIN_CHAT_ID) {
-                if (text === '/repairon') {
-                    global.isMaintenanceMode = true;
-                    await bot.sendMessage(userId, '🛠️ تم تفعيل وضع الصيانة.');
-                    return res.status(200).send('Maintenance ON');
-                }
-                if (text === '/repairoff') {
-                    global.isMaintenanceMode = false;
-                    await bot.sendMessage(userId, '✅ تم إيقاف وضع الصيانة.');
-                    return res.status(200).send('Maintenance OFF');
-                }
+        // 🛠️ فحص أوامر الصيانة (للأدمن فقط)
+        if (update.message && update.message.text && String(update.message.from.id) === ADMIN_CHAT_ID) {
+            if (update.message.text === '/repairon') { 
+                global.isMaintenanceMode = true; 
+                await bot.sendMessage(ADMIN_CHAT_ID, '🛠️ Maintenance Mode: ON'); 
+                return res.send('ON'); 
+            }
+            if (update.message.text === '/repairoff') { 
+                global.isMaintenanceMode = false; 
+                await bot.sendMessage(ADMIN_CHAT_ID, '✅ Maintenance Mode: OFF'); 
+                return res.send('OFF'); 
             }
         }
 
-        // 🚧 فحص وضع الصيانة
+        // منع الاستخدام أثناء الصيانة
         if (global.isMaintenanceMode && String(update.message?.from?.id) !== ADMIN_CHAT_ID) {
-            if (update.message) await bot.sendMessage(update.message.chat.id, '⚠️ البوت في وضع الصيانة حالياً.');
-            return res.status(200).send('Maintenance Active');
+             if(update.message) await bot.sendMessage(update.message.chat.id, '⚠️ البوت في وضع الصيانة حالياً للتحديث.'); 
+             return res.send('Maintenance');
         }
 
         // =========================================================
-        // 1️⃣ استلام ملف PDF واستخراج النص
+        // 1️⃣ استلام الملف (PDF)
         // =========================================================
         if (update.message && update.message.document) {
             const chatId = update.message.chat.id;
             const fileId = update.message.document.file_id;
-            const mimeType = update.message.document.mime_type;
-            const fileSize = update.message.document.file_size;
-
-            // التحقق من الصيغة والحجم (أقل من 20 ميجا لضمان سرعة التحميل)
-            if (mimeType !== 'application/pdf') {
-                await bot.sendMessage(chatId, '❌ يرجى إرسال ملف PDF فقط.');
-                return res.status(200).send('OK');
-            }
-            if (fileSize > 20 * 1024 * 1024) {
-                await bot.sendMessage(chatId, '❌ حجم الملف كبير جداً (أكبر من 20MB).');
-                return res.status(200).send('OK');
+            const user = update.message.from;
+            const userName = `${user.first_name} ${user.last_name || ''}`.trim();
+            
+            if (update.message.document.mime_type !== 'application/pdf') {
+                await bot.sendMessage(chatId, '❌ يرجى إرسال ملفات PDF فقط.'); 
+                return res.send('OK');
             }
 
-            const processingMsg = await bot.sendMessage(chatId, '⏳ جاري تحميل الملف واستخراج النص...');
+            // A. تسجيل المستخدم فوراً في Supabase
+            await upsertUser(user);
 
+            // B. تسجيل محاولة رفع ملف (بعدد أسئلة 0 مبدئياً)
+            await logUsage(user.id, 0, 'file_upload', 'processing');
+
+            const msg = await bot.sendMessage(chatId, '⏳ تم استلام الملف.. جاري استخراج النص والتحليل...');
+
+            // C. استخراج النص وإرساله لـ GAS
             try {
-                // تحميل الملف
                 const fileLink = await bot.getFileLink(fileId);
                 const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
-                
-                // استخراج النص
                 const pdfData = await pdf(Buffer.from(response.data));
-                const extractedText = pdfData.text;
+                const text = pdfData.text;
 
-                // التحقق من وجود نص
-                if (!extractedText || extractedText.trim().length < 50) {
-                    await bot.deleteMessage(chatId, processingMsg.message_id);
-                    await bot.sendMessage(chatId, '❌ النص في الملف قصير جداً أو عبارة عن صور (Scanned PDF). يرجى إرسال ملف يحتوي على نصوص قابلة للنسخ.');
+                if (!text || text.length < 50) {
+                    await bot.sendMessage(chatId, '❌ الملف لا يحتوي على نص قابل للقراءة (ربما يكون صوراً).');
                 } else {
-                    // ✅ تم الاستخراج بنجاح -> حفظ في الذاكرة المؤقتة
-                    global.userState[chatId] = { 
-                        text: extractedText,
-                        fileName: update.message.document.file_name
-                    };
-
-                    await bot.deleteMessage(chatId, processingMsg.message_id);
+                    // D. إبلاغ المستخدم وتحويل المهمة لـ GAS
+                    await bot.editMessageText('🤖 تم إرسال النص للذكاء الاصطناعي...\n✨ ستصلك النتائج والأزرار تلقائياً خلال دقيقة.', { chat_id: chatId, message_id: msg.message_id });
                     
-                    const keyboard = {
-                        inline_keyboard: [
-                            [{ text: 'إرسال هنا 📤', callback_data: 'send_here' }],
-                            [{ text: 'إرسال لقناة 📢', callback_data: 'send_to_channel' }]
-                        ]
-                    };
-
-                    await bot.sendMessage(chatId, 
-                        `✅ تم استخراج النص بنجاح!\n📏 الطول: ${extractedText.length} حرف.\n\nالآن اختر أين تريد إرسال الأسئلة بعد التحليل:`, 
-                        { reply_markup: keyboard }
-                    );
+                    // نرسل البيانات لـ GAS (بما في ذلك fileId لتقرير الأدمن)
+                    await sendToGasAndForget({
+                        action: 'analyze_async',
+                        text: text,
+                        chatId: chatId,
+                        userId: user.id,
+                        userName: userName,
+                        fileId: fileId // 👈 هام جداً لكي يرسل GAS الملف للأدمن
+                    });
                 }
-
-            } catch (error) {
-                console.error("PDF Error:", error);
-                await bot.deleteMessage(chatId, processingMsg.message_id);
-                await bot.sendMessage(chatId, '❌ حدث خطأ أثناء قراءة الملف. تأكد أن الملف سليم.');
+            } catch (err) {
+                console.error("PDF Error:", err);
+                await bot.sendMessage(chatId, '❌ حدث خطأ أثناء معالجة الملف.');
             }
         }
 
         // =========================================================
-        // 2️⃣ التعامل مع الأزرار (اختيار الوجهة)
+        // 2️⃣ التعامل مع الأزرار (Callbacks)
         // =========================================================
         else if (update.callback_query) {
             const cb = update.callback_query;
             const chatId = cb.message.chat.id;
-            const data = cb.data;
-            const user = cb.from;
+            const data = cb.data; 
+            const userId = cb.from.id;
 
-            // التحقق من وجود النص في الذاكرة
-            if (!global.userState[chatId] || !global.userState[chatId].text) {
-                await bot.answerCallbackQuery(cb.id, { text: '⚠️ انتهت الجلسة، يرجى إرسال الملف مرة أخرى.', show_alert: true });
-                return res.status(200).send('OK');
-            }
+            // البيانات تأتي من GAS بالصيغة: cmd_send|count|model|target
+            
+            if (data.startsWith('cmd_send')) {
+                const parts = data.split('|');
+                const count = parts[1];
+                const model = parts[2];
+                const target = parts[3];
 
-            if (data === 'send_here') {
-                await bot.answerCallbackQuery(cb.id);
-                
-                // إرسال رسالة انتظار سيتم تحديثها لاحقاً بواسطة GAS
-                const statusMsg = await bot.sendMessage(chatId, '🚀 تم إرسال البيانات للسيرفر الرئيسي (GAS)...\n⏳ سيبدأ التحليل والإرسال تلقائياً خلال لحظات.');
-                
-                // إعداد البيانات لـ GAS
-                const payload = {
-                    action: 'analyze_and_send',
-                    text: global.userState[chatId].text,
-                    targetChatId: chatId,
-                    originalChatId: chatId,
-                    chatType: 'private',
-                    closePolls: false, // افتراضي
-                    userName: `${user.first_name} ${user.last_name || ''}`.trim(),
-                    userId: user.id,
-                    messageId: statusMsg.message_id // نرسل رقم الرسالة ليقوم GAS بتحديثها
-                };
+                if (target === 'here') {
+                    await bot.answerCallbackQuery(cb.id, { text: '🚀 تم البدء...' });
+                    await bot.sendMessage(chatId, `⏳ جاري إرسال ${count} سؤال الآن...`);
 
-                // إرسال للـ Backend (بدون انتظار طويل)
-                await sendToGasAndForget(payload);
+                    // A. تسجيل الاستهلاك الفعلي في Supabase
+                    await logUsage(userId, count, model, 'executed');
 
-                // تنظيف الذاكرة
-                delete global.userState[chatId];
-            } 
-            else if (data === 'send_to_channel') {
-                await bot.answerCallbackQuery(cb.id);
-                global.userState[chatId].step = 'awaiting_channel_id';
-                await bot.sendMessage(chatId, '📝 أرسل الآن معرف القناة أو المجموعة (ID) التي تريد الإرسال إليها:\nمثال: -100123456789');
+                    // B. أمر التنفيذ لـ GAS
+                    await sendToGasAndForget({
+                        action: 'execute_send',
+                        userId: userId,
+                        targetChatId: chatId,
+                        chatType: 'private'
+                    });
+                } 
+                else if (target === 'chan') {
+                    // حفظ الحالة لانتظار معرف القناة
+                    global.userState[userId] = { step: 'awaiting_channel', count, model };
+                    await bot.answerCallbackQuery(cb.id);
+                    await bot.sendMessage(chatId, '📝 أرسل معرف القناة (ID) أو المعرف العام (@channel) الآن:');
+                }
             }
         }
 
@@ -188,43 +204,33 @@ module.exports = async (req, res) => {
         // 3️⃣ استلام معرف القناة (إذا اختار المستخدم ذلك)
         // =========================================================
         else if (update.message && update.message.text) {
-            const chatId = update.message.chat.id;
-            const text = update.message.text.trim();
-            const user = update.message.from;
+             const userId = update.message.from.id;
+             const chatId = update.message.chat.id;
+             const text = update.message.text.trim();
 
-            // إذا كان المستخدم في خطوة انتظار القناة
-            if (global.userState[chatId] && global.userState[chatId].step === 'awaiting_channel_id') {
-                const targetId = text;
+             if (global.userState[userId] && global.userState[userId].step === 'awaiting_channel') {
+                 const { count, model } = global.userState[userId];
+                 
+                 await bot.sendMessage(chatId, `🚀 تم التوجيه للقناة (${text})...`);
+                 
+                 // تسجيل الاستهلاك
+                 await logUsage(userId, count, model, 'executed_channel');
 
-                // تحقق بسيط من صحة المعرف
-                if (!targetId.startsWith('-100') && !targetId.startsWith('@')) {
-                    await bot.sendMessage(chatId, '⚠️ معرف غير صالح. يجب أن يبدأ بـ -100 للأرقام أو @ للمعلقات العامة.');
-                    return res.status(200).send('OK');
-                }
-
-                // إرسال رسالة تأكيد
-                const statusMsg = await bot.sendMessage(chatId, `🚀 تم توجيه الطلب للقناة (${targetId})...\n⏳ سيبدأ السيرفر بالتحليل والإرسال هناك.`);
-
-                const payload = {
-                    action: 'analyze_and_send',
-                    text: global.userState[chatId].text,
-                    targetChatId: targetId,
-                    originalChatId: chatId, // التقارير ترسل هنا
-                    chatType: 'channel',
-                    closePolls: false,
-                    userName: `${user.first_name} ${user.last_name || ''}`.trim(),
-                    userId: user.id,
-                    messageId: statusMsg.message_id
-                };
-
-                await sendToGasAndForget(payload);
-                delete global.userState[chatId];
-            }
+                 // أمر التنفيذ لـ GAS
+                 await sendToGasAndForget({
+                    action: 'execute_send',
+                    userId: userId,
+                    targetChatId: text, // معرف القناة
+                    chatType: 'channel'
+                });
+                
+                // مسح الحالة
+                delete global.userState[userId];
+             }
         }
 
-    } catch (error) {
-        console.error("General Vercel Error:", error);
-    }
-
+    } catch (e) { console.error("General Error:", e); }
+    
+    // إنهاء الطلب فوراً (Important for Vercel)
     res.status(200).send('OK');
 };
