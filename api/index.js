@@ -12,7 +12,7 @@ const userState = {};
 
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 
-// دالة مساعدة للتأخير (لتجنب الحظر السريع بين المحاولات)
+// دالة مساعدة للتأخير (لتجنب الحظر السريع بين المفاتيح)
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 /*
@@ -20,12 +20,11 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
  */
 async function sendAdminNotification(status, user, fileId, details = '', method = 'غير محدد ❓') {
   if (String(user.id) === ADMIN_CHAT_ID) {
-    console.log("User is the admin. Skipping self-notification.");
     return; 
   }
 
   if (!ADMIN_CHAT_ID) {
-    console.log("ADMIN_CHAT_ID is not set. Skipping notification.");
+    console.log("ADMIN_CHAT_ID is not set.");
     return;
   }
 
@@ -82,9 +81,9 @@ module.exports = async (req, res) => {
             const chatId = message.chat.id;
             const user = message.from;
             const fileId = message.document.file_id;
-            const uniqueRequestId = `${fileId}_${update.update_id}`; // معرف فريد للطلب
+            const uniqueRequestId = `${fileId}_${update.update_id}`;
 
-            // 🧠 كاش لمنع التحليل المكرر (Processing Lock)
+            // 🧠 كاش لمنع التحليل المكرر
             if (!global.processingFiles) global.processingFiles = new Set();
 
             if (global.processingFiles.has(uniqueRequestId)) {
@@ -93,7 +92,6 @@ module.exports = async (req, res) => {
                 return res.status(200).send('Duplicate processing ignored.');
             }
 
-            // تفعيل القفل
             global.processingFiles.add(uniqueRequestId);
 
             let adminNotificationStatus = '';
@@ -106,13 +104,13 @@ module.exports = async (req, res) => {
                 adminNotificationStatus = 'ملف مرفوض 🐘';
                 adminNotificationDetails = `السبب: حجم الملف (${(message.document.file_size / 1024 / 1024).toFixed(2)} MB) أكبر من الحد المسموح.`;
                 extractionMethodReport = 'مرفوض (الحجم)';
-                global.processingFiles.delete(uniqueRequestId); // فك القفل فوراً
+                global.processingFiles.delete(uniqueRequestId);
             } else if (message.document.mime_type !== 'application/pdf') {
                 await bot.sendMessage(chatId, '⚠️ يرجى إرسال ملف بصيغة PDF فقط.');
                 adminNotificationStatus = 'ملف مرفوض 📄';
                 adminNotificationDetails = `السبب: نوع الملف ليس PDF (النوع المرسل: ${message.document.mime_type}).`;
                 extractionMethodReport = 'مرفوض (الصيغة)';
-                global.processingFiles.delete(uniqueRequestId); // فك القفل فوراً
+                global.processingFiles.delete(uniqueRequestId);
             } else {
                 const waitingMsg = await bot.sendMessage(chatId, '📑 استلمت الملف، جاري تحليله واستخراج الأسئلة...');
                 let patienceTimer = null;
@@ -167,7 +165,6 @@ module.exports = async (req, res) => {
                     } else {
                         try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
                         
-                        // استخدام التقرير المخزن للعرض
                         const failReportToShow = extractionResult.failureReport || "لا يوجد تفاصيل.";
                         const failMessage = `❌ لم أتمكن من العثور على أي أسئلة بصيغة صحيحة.\n\n` +
                                             `📋 التشخيص:\n` + 
@@ -192,7 +189,6 @@ module.exports = async (req, res) => {
                         adminNotificationDetails = `السبب: ${error.message}`;
                     }
                 } finally {
-                    // ✅ فك القفل في النهاية دائماً
                     global.processingFiles.delete(uniqueRequestId);
                 }
             }
@@ -373,7 +369,7 @@ async function extractQuestions(text) {
     let questions = [];
     let failureSummary = '';
 
-    // 1️⃣ محاولة الذكاء الاصطناعي (بنظام الدورتين: الأساسي ثم الاحتياطي)
+    // 1️⃣ محاولة الذكاء الاصطناعي (بنظام الدورتين)
     if (text.trim().length > 50) {
         console.log("Attempting AI extraction...");
         try {
@@ -386,7 +382,6 @@ async function extractQuestions(text) {
             };
         } catch (error) {
             console.error("AI Models completely failed. See logs.");
-            // نأخذ سبب الفشل المختصر من نص الخطأ
             if (error.message.startsWith("Report:")) {
                 failureSummary = error.message.replace("Report: ", "");
             } else {
@@ -422,19 +417,18 @@ async function extractQuestions(text) {
 
 // ✨ الدالة الذكية (تدعم مفاتيح متعددة + Gemma 3 Backup)
 async function extractWithAI(text) {
-    // جلب المفاتيح من المتغير وتحويلها لمصفوفة
+    // جلب المفاتيح
     const keysRaw = process.env.GEMINI_API_KEY || '';
     const keys = keysRaw.split(',').map(k => k.trim()).filter(k => k);
     
     if (keys.length === 0) throw new Error("Report: No Keys Configured");
 
-    // إعداد النماذج (الأساسي والاحتياطي)
+    // إعداد النماذج (Flash 2.5 + Gemma 3)
     const modelsToTry = [
         { id: 'gemini-2.5-flash', apiVersion: 'v1', label: 'Flash 2.5', isFallback: false },
         { id: 'gemma-3-27b-it', apiVersion: 'v1beta', label: 'Gemma 3 (27B)', isFallback: true }
     ];
 
-    // نفس البرومبت المطلوب حرفياً
     const prompt = `
     Analyze the following text and extract all multiple-choice questions.
     For each question, provide:
@@ -533,17 +527,15 @@ async function extractWithAI(text) {
                 const errorResponse = error.response ? error.response.data : {};
                 const errorCode = errorResponse.error ? errorResponse.error.code : (error.response ? error.response.status : 0);
                 
-                // ✅ جلب الرسالة الخام كما هي
+                // جلب الرسالة الخام من جوجل
                 const errorMsg = errorResponse.error ? errorResponse.error.message : error.message;
                 
-                // ✅ تنسيق الرسالة لعرض التفاصيل كاملة بدون اختصار
                 let logMsg = `Key #${i+1} [${model.id}] -> Code: ${errorCode} | 📢 Google Says: "${errorMsg}"`;
                 
-                // حفظ في السجل وطباعة في الكونسول
                 fullLog.push(logMsg);
                 console.error(`❌ ${logMsg}`);
 
-                // إحصائيات للتقرير المختصر (لا تؤثر على الطباعة المفصلة)
+                // إحصائيات للتقرير المختصر
                 if (errorCode === 429) quotaHits++;
                 else if (errorCode === 404) notFoundHits++;
                 else if (errorCode === 503) busyHits++;
@@ -552,6 +544,25 @@ async function extractWithAI(text) {
                 // تأخير بسيط إذا لم يكن آخر مفتاح
                 if (i < keys.length - 1) await delay(1000);
             }
+        } // End Key Loop
+
+        let modelStatus = '';
+        if (quotaHits === keys.length) modelStatus = 'Quota 📉'; 
+        else if (notFoundHits === keys.length) modelStatus = 'Not Found ❌'; 
+        else if (busyHits > 0) modelStatus = 'Busy 🛑';
+        else modelStatus = 'Errors ⚠️';
+
+        summaryReport.push(`${model.label}: ${modelStatus}`);
+        fullLog.push(`⚠️ All keys failed for ${model.label}`);
+
+    } // End Model Loop
+
+    // إذا وصلنا هنا، يعني الفشل التام
+    const finalReport = `Report: ${summaryReport.join(' + ')}`;
+    const errorObj = new Error(finalReport);
+    errorObj.fullLog = fullLog.join('\n');
+    throw errorObj;
+}
 
 // (دالة Regex - كما هي تماماً)
 function extractWithRegex(text) {
@@ -669,4 +680,4 @@ function formatQuizText(quizData) {
     }
     if (quizData.explanation) formattedText += `\nExplanation: ${quizData.explanation}`;
     return formattedText;
-                      }
+    }
