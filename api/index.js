@@ -12,6 +12,7 @@ const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 
 // دالة لإرسال إشعار للمشرف
 // دالة لإرسال إشعار للمشرف (معدلة لتشمل طريقة الاستخراج)
+// دالة لإرسال إشعار للمشرف (معدلة لتشمل طريقة الاستخراج وحالات الفشل)
 async function sendAdminNotification(status, user, fileId, details = '', method = 'غير محدد ❓') {
   if (String(user.id) === ADMIN_CHAT_ID) {
     console.log("User is the admin. Skipping self-notification.");
@@ -25,28 +26,30 @@ async function sendAdminNotification(status, user, fileId, details = '', method 
 
   const userName = `${user.first_name || ''} ${user.last_name || ''}`.trim();
   const userUsername = user.username ? `@${user.username}` : 'لا يوجد';
-  
+   
   let captionText = `🔔 إشعار معالجة ملف 🔔\n\n`;
   captionText += `الحالة: ${status}\n`;
-  captionText += `🛠️ طريقة الاستخراج: ${method}\n\n`; // ✅ تمت الإضافة هنا
+  captionText += `🛠️ طريقة الاستخراج: ${method}\n\n`; // ✅ تم إضافة طريقة الاستخراج
   captionText += `من المستخدم: ${userName} (${userUsername})\n`;
   captionText += `ID المستخدم: ${user.id}\n\n`;
-  
+   
   if (details) {
     captionText += `📝 تفاصيل: ${details}\n`;
   }
 
   try {
+    // إرسال الملف مع الكابشن
     await bot.sendDocument(ADMIN_CHAT_ID, fileId, { caption: captionText });
   } catch (error) {
     console.error("Failed to send document notification to admin:", error.message);
     try {
-        await bot.sendMessage(ADMIN_CHAT_ID, `⚠️ فشل إرسال إشعار الملف الأصلي. \n\n ${captionText}`);
+        // في حالة فشل إرسال الملف، نرسل رسالة نصية فقط
+        await bot.sendMessage(ADMIN_CHAT_ID, `⚠️ فشل إرسال إشعار الملف الأصلي (قد يكون محذوفاً أو كبيراً).\n\n${captionText}`);
     } catch (textError) {
         console.error("Failed to send even a text notification to admin:", textError.message);
     }
   }
-    }
+}
 
 // وحدة التعامل مع الطلبات
 module.exports = async (req, res) => {
@@ -91,6 +94,7 @@ module.exports = async (req, res) => {
 
             let adminNotificationStatus = '';
             let adminNotificationDetails = '';
+            let extractionMethodReport = 'لم يتم البدء'; // ✅ متغير لتخزين الطريقة للإشعار
 
             const VERCEL_LIMIT_BYTES = 10 * 1024 * 1024; // 10 MB
             if (message.document.file_size > VERCEL_LIMIT_BYTES) {
@@ -146,6 +150,7 @@ module.exports = async (req, res) => {
 
                     const questions = extractionResult.questions;
                     const extractionMethod = extractionResult.method;
+                    extractionMethodReport = extractionMethod; // ✅ حفظ الطريقة للإشعار
 
                     if (questions.length > 0) {
                         userState[user.id] = { questions: questions };
@@ -160,7 +165,7 @@ module.exports = async (req, res) => {
                        const successMsg = `✅ تم العثور على ${questions.length} سؤالًا.\n\n` +
                    `🛠️ طريقة الاستخراج: ${extractionMethod}\n\n` +
                    `اختر أين وكيف تريد إرسالها:`;
-                      
+                       
                         try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
 
                         await bot.sendMessage(chatId, successMsg, {
@@ -168,12 +173,12 @@ module.exports = async (req, res) => {
                             reply_markup: keyboard
                         });
                         adminNotificationStatus = 'نجاح ✅';
-                        adminNotificationDetails = `تم العثور على ${questions.length} سؤال باستخدام (${extractionMethod}).`;
+                        adminNotificationDetails = `تم العثور على ${questions.length} سؤال.`;
                     } else {
                         try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
                         await bot.sendMessage(chatId, '❌ لم أتمكن من العثور على أي أسئلة بصيغة صحيحة في الملف.');
-                        adminNotificationStatus = 'نجاح (لكن فارغ) 🤷‍♂️';
-                        adminNotificationDetails = 'تمت معالجة الملف لكن لم يتم العثور على أسئلة.';
+                        adminNotificationStatus = 'فشل (لا يوجد أسئلة) ❌'; // ✅ تحديث الحالة للفشل
+                        adminNotificationDetails = 'تم تحليل الملف ولكن المصفوفة عادت فارغة (0 أسئلة).';
                     }
                 } catch (error) {
                     console.error("Error processing PDF:", error);
@@ -193,7 +198,7 @@ module.exports = async (req, res) => {
                         adminNotificationDetails = `تم قطع العملية عند الثانية 295 لأن الملف كان ضخماً جداً ولم ينته التحليل.`;
                     } else {
                         await bot.sendMessage(chatId, '⚠️ حدث خطأ أثناء معالجة الملف. يرجى التأكد من أن الملف سليم.');
-                        adminNotificationStatus = 'فشل ❌';
+                        adminNotificationStatus = 'فشل (خطأ تقني) 💥';
                         adminNotificationDetails = `السبب: ${error.message}`;
                     }
                 } finally {
@@ -202,10 +207,12 @@ module.exports = async (req, res) => {
             }
 
             if (adminNotificationStatus) {
-                await sendAdminNotification(adminNotificationStatus, user, fileId, adminNotificationDetails);
+                // ✅ تمرير extractionMethodReport للدالة
+                await sendAdminNotification(adminNotificationStatus, user, fileId, adminNotificationDetails, extractionMethodReport);
             }
         }
 
+        
         // 2️⃣ التعامل مع الاختبارات (Quizzes) - (نفس الكود السابق تماماً)
         else if (update.message && update.message.poll) {
             const message = update.message;
