@@ -1,4 +1,4 @@
-// ==== بداية كود Vercel الكامل (api/index.js) - Version 8.0 ====
+// ==== بداية كود Vercel الكامل (api/index.js) - Version 9.0 (Original Prompt Restored) ====
 
 const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
@@ -12,11 +12,11 @@ const userState = {};
 
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 
-// دالة مساعدة للتأخير (تجنب الحظر)
+// دالة مساعدة للتأخير
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 /*
- * دالة لإرسال إشعار للمشرف (محسنة ومختصرة)
+ * دالة لإرسال إشعار للمشرف
  */
 async function sendAdminNotification(status, user, fileId, details = '', method = 'غير محدد ❓') {
   if (String(user.id) === ADMIN_CHAT_ID) return;
@@ -45,7 +45,7 @@ async function sendAdminNotification(status, user, fileId, details = '', method 
   }
 }
 
-// وحدة التعامل مع الطلبات (Main Handler)
+// وحدة التعامل مع الطلبات
 module.exports = async (req, res) => {
     try {
         if (req.method !== 'POST') {
@@ -54,7 +54,7 @@ module.exports = async (req, res) => {
         const body = await micro.json(req);
         const update = body;
 
-        // 🛡️ منع التكرار الزمني (Stale Requests)
+        // 🛡️ منع التكرار الزمني
         if (update.message && update.message.date) {
             const timeDiff = Math.floor(Date.now() / 1000) - update.message.date;
             if (timeDiff > 20) return res.status(200).send('Stale request ignored.');
@@ -128,7 +128,6 @@ module.exports = async (req, res) => {
                             ]
                         };
                         
-                       // رسالة النجاح للمستخدم
                        const successMsg = `✅ تم العثور على ${questions.length} سؤالًا.\n\n` +
                                           `🧠 المعالج: ${extractionMethodReport}\n\n` +
                                           `اختر وجهة الإرسال:`;
@@ -331,7 +330,7 @@ module.exports = async (req, res) => {
 };
 
 // =================================================================
-// ✨✨ === منطق الاستخراج الذكي (Logic Version 8.0) === ✨✨
+// ✨✨ === منطق الاستخراج الذكي (Logic Version 9.0) === ✨✨
 // =================================================================
 
 async function extractQuestions(text) {
@@ -345,9 +344,9 @@ async function extractQuestions(text) {
             const aiResult = await extractWithAI(text);
             return { 
                 questions: aiResult.questions, 
-                // نص يظهر للمستخدم: "Flash 2.5 (الأساسي/الأقوى)"
+                // نص يظهر للمستخدم
                 method: `AI 🤖 (${aiResult.modelDisplay})`,
-                // نص يظهر للأدمن فقط: "تم باستخدام المفتاح رقم 5 ونموذج فلاش"
+                // نص يظهر للأدمن
                 adminDetails: `✅ النجاح باستخدام:\n- النموذج: ${aiResult.modelDisplay}\n- المفتاح: Key #${aiResult.keyIndex}`
             };
         } catch (error) {
@@ -378,14 +377,13 @@ async function extractQuestions(text) {
     };
 }
 
-// دالة AI تدعم تعدد المفاتيح + النماذج + التقارير المبسطة للأدمن
+// دالة AI تدعم تعدد المفاتيح + النماذج + التقارير المبسطة + البرومبت الأصلي
 async function extractWithAI(text) {
     const keysRaw = process.env.GEMINI_API_KEY || '';
     const keys = keysRaw.split(',').map(k => k.trim()).filter(k => k);
     
     if (keys.length === 0) throw new Error("Report: No Keys");
 
-    // تعريف النماذج مع نصوص العرض المطلوبة
     const modelsToTry = [
         { 
             id: 'gemini-2.5-flash', 
@@ -399,16 +397,32 @@ async function extractWithAI(text) {
         }
     ];
 
+    // ✅✅ تم استعادة البرومبت الأصلي الخاص بك حرفياً ✅✅
     const prompt = `
     Analyze the following text and extract all multiple-choice questions.
     For each question, provide:
-    1. The question number as a string.
+    1. The question number as a string (e.g., "1", "Q2", "٣"), if it exists.
     2. The full question text.
     3. A list of all possible options.
     4. The index of the correct answer (starting from 0).
-    5. The explanation for the answer.
-    VERY IMPORTANT: Respond ONLY with a valid JSON array of objects.
-    
+    5. The explanation for the answer, if one is provided in the text.
+    VERY IMPORTANT: Respond ONLY with a valid JSON array of objects. Each object should have these exact keys: "question", "options", "correctAnswerIndex", and optionally "questionNumber" and "explanation". The "questionNumber" key should only be present if a number is explicitly found next to the question in the source text. Do not include any text or markdown formatting outside the JSON array.
+    Example Response Format:
+    [
+      {
+        "questionNumber": "1",
+        "question": "What is the capital of France?",
+        "options": ["Berlin", "Madrid", "Paris", "Rome"],
+        "correctAnswerIndex": 2,
+        "explanation": "Paris is the capital and most populous city of France."
+      },
+      {
+        "questionNumber": "Q2",
+        "question": "Which planet is known as the Red Planet?",
+        "options": ["Earth", "Mars", "Jupiter", "Venus"],
+        "correctAnswerIndex": 1
+      }
+    ]
     Text:
     ---
     ${text}
@@ -424,6 +438,9 @@ async function extractWithAI(text) {
         
         let quotaCount = 0;
         let notFoundCount = 0;
+        let busyCount = 0;
+        let parseErrorCount = 0;
+        let otherErrorCount = 0;
 
         // 🔄 Key Loop
         for (let i = 0; i < keys.length; i++) {
@@ -433,56 +450,73 @@ async function extractWithAI(text) {
             try {
                 const response = await axios.post(url, payload, { headers: { 'Content-Type': 'application/json' } });
 
-                if (!response.data.candidates || response.data.candidates.length === 0) continue;
+                if (!response.data.candidates || response.data.candidates.length === 0) {
+                     console.log(`❌ Key #${i+1}: Empty Response`);
+                     parseErrorCount++;
+                     continue;
+                }
 
                 const aiResponseText = response.data.candidates[0].content.parts[0].text;
                 const cleanedJsonString = aiResponseText.replace(/```json/g, '').replace(/```/g, '').trim();
-                let parsedQuestions = JSON.parse(cleanedJsonString);
                 
-                if (Array.isArray(parsedQuestions) && parsedQuestions.length > 0) {
-                    const valid = parsedQuestions.every(q => q.question && Array.isArray(q.options) && q.correctAnswerIndex !== undefined);
-                    if (valid) {
-                        console.log(`✅ Success: ${model.id} | Key #${i+1}`);
-                        
-                        parsedQuestions.forEach(q => {
-                            if (q.questionNumber) {
-                                q.question = `${q.questionNumber}) ${q.question}`;
-                                delete q.questionNumber;
-                            }
-                        });
+                try {
+                    let parsedQuestions = JSON.parse(cleanedJsonString);
+                    if (Array.isArray(parsedQuestions) && parsedQuestions.length > 0) {
+                        const valid = parsedQuestions.every(q => q.question && Array.isArray(q.options) && q.correctAnswerIndex !== undefined);
+                        if (valid) {
+                            console.log(`✅ Success: ${model.id} | Key #${i+1}`);
+                            
+                            // دمج رقم السؤال مع النص (كما في الكود الأصلي)
+                            parsedQuestions.forEach(q => {
+                                if (q.questionNumber) {
+                                    q.question = `${q.questionNumber}) ${q.question}`;
+                                    delete q.questionNumber;
+                                }
+                            });
 
-                        // إرجاع النتيجة الناجحة فوراً مع التفاصيل المطلوبة
-                        return { 
-                            questions: parsedQuestions, 
-                            modelDisplay: model.displayText, // النص العربي (الأقوى/الأضعف)
-                            keyIndex: i + 1 // رقم المفتاح للأدمن
-                        };
+                            return { 
+                                questions: parsedQuestions, 
+                                modelDisplay: model.displayText, 
+                                keyIndex: i + 1 
+                            };
+                        } else {
+                            console.log(`❌ Key #${i+1}: JSON Valid but missing keys`);
+                            parseErrorCount++;
+                        }
+                    } else {
+                        parseErrorCount++;
                     }
+                } catch (e) {
+                    console.log(`❌ Key #${i+1}: JSON Parse Error`);
+                    parseErrorCount++;
                 }
+
             } catch (error) {
                 const status = error.response ? error.response.status : 0;
-                // تسجيل الأخطاء فقط لغرض الإحصاء الداخلي
+                
                 if (status === 429) quotaCount++;
                 else if (status === 404) notFoundCount++;
+                else if (status === 503) busyCount++;
+                else otherErrorCount++;
                 
-                // لوج في الكونسول فقط (للمطور)
                 console.error(`❌ ${model.id} | Key #${i+1} | Status: ${status}`);
                 
                 if (i < keys.length - 1) await delay(1000);
             }
         } // End Key Loop
 
-        // تلخيص الفشل للانتقال للنموذج التالي
-        let reason = 'Unknown';
-        if (quotaCount === keys.length) reason = 'Quota Exhausted 📉';
-        else if (notFoundCount === keys.length) reason = 'Model Not Found ❌';
-        else reason = 'Server/Parse Errors';
+        // 🔥 تلخيص سبب الفشل الدقيق
+        let reason = '';
+        if (quotaCount === keys.length) reason = 'الرصيد انتهى (Quota) 📉';
+        else if (notFoundCount === keys.length) reason = 'النموذج غير موجود ❌';
+        else if (busyCount > 0 && (busyCount + quotaCount === keys.length)) reason = 'السيرفر مشغول (Busy) 🛑';
+        else if (parseErrorCount > 0) reason = 'فشل التحليل (هلوسة AI) 🥴';
+        else reason = 'أخطاء اتصال/غير معروفة ⚠️';
         
         failLogs.push(`${model.id}: ${reason}`);
 
     } // End Model Loop
 
-    // إذا وصلنا هنا، يعني الفشل
     throw new Error(`Report: ${failLogs.join(' + ')}`);
 }
 
@@ -516,4 +550,4 @@ function formatQuizText(quizData) {
     }
     if (quizData.explanation) formattedText += `\nExplanation: ${quizData.explanation}`;
     return formattedText;
-          }
+}
