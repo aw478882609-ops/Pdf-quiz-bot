@@ -1,4 +1,4 @@
-// ==== بداية كود Vercel الكامل (api/index.js) - Version 14.0 (Supabase Stats & Admin Panel) ====
+// ==== بداية كود Vercel الكامل (api/index.js) - Version 17.0 (Maintenance Notify + No Custom Timeout) ====
 
 const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
@@ -13,9 +13,9 @@ const userState = {};
 
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 
-// تهيئة Supabase (باستخدام Service Role Key للصلاحيات الكاملة)
+// تهيئة Supabase
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_KEY; // تأكد أن هذا هو Service Role Key
+const supabaseKey = process.env.SUPABASE_KEY; 
 const supabase = createClient(supabaseUrl, supabaseKey, {
     auth: { persistSession: false }
 });
@@ -27,7 +27,6 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 // 🗄️ دوال قاعدة البيانات (Supabase Helpers)
 // =================================================================
 
-// 1. تسجيل أو تحديث بيانات المستخدم
 async function registerUser(user) {
     if (!user || !user.id) return;
     const { error } = await supabase
@@ -38,11 +37,9 @@ async function registerUser(user) {
             username: user.username || '',
             last_active: new Date().toISOString()
         }, { onConflict: 'user_id' });
-    
-    if (error) console.error("Error registering user:", error.message);
+    if (error) console.error("Register Error:", error.message);
 }
 
-// 2. التحقق من وضع الصيانة
 async function checkMaintenanceMode() {
     try {
         const { data } = await supabase.from('bot_config').select('value').eq('key', 'maintenance_mode').single();
@@ -50,14 +47,11 @@ async function checkMaintenanceMode() {
     } catch (e) { return false; }
 }
 
-// 3. تغيير وضع الصيانة
 async function setMaintenanceMode(status) {
     await supabase.from('bot_config').upsert({ key: 'maintenance_mode', value: status });
 }
 
-// 4. تسجيل عملية معالجة ملف (LOGGING)
 async function logProcessing(data) {
-    // data: { userId, fileId, status, method, modelUsed, questionsCount, timeMs, errorReason }
     try {
         await supabase.from('processing_logs').insert({
             user_id: data.userId,
@@ -72,11 +66,8 @@ async function logProcessing(data) {
     } catch (e) { console.error("Logging Error:", e.message); }
 }
 
-// 5. جلب الإحصائيات العامة (للأدمن)
 async function getGlobalStats() {
-    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-
-    // دالة مساعدة للعد
+    const today = new Date().toISOString().split('T')[0];
     const getCount = async (table, filter = null) => {
         let query = supabase.from(table).select('*', { count: 'exact', head: true });
         if (filter) query = filter(query);
@@ -84,49 +75,35 @@ async function getGlobalStats() {
         return count || 0;
     };
 
-    // 1. المستخدمين
     const totalUsers = await getCount('users');
     const activeToday = await getCount('users', q => q.gte('last_active', today));
-
-    // 2. الملفات (كلي)
     const totalFiles = await getCount('processing_logs');
     const totalSuccess = await getCount('processing_logs', q => q.eq('status', 'success'));
-    
-    // 3. الملفات (اليوم)
     const filesToday = await getCount('processing_logs', q => q.gte('created_at', today));
     const successToday = await getCount('processing_logs', q => q.gte('created_at', today).eq('status', 'success'));
-
-    // 4. تفاصيل النماذج (اليوم)
     const aiFlashToday = await getCount('processing_logs', q => q.gte('created_at', today).eq('model_used', 'gemini-2.5-flash'));
     const aiGemmaToday = await getCount('processing_logs', q => q.gte('created_at', today).eq('model_used', 'gemma-3-27b-it'));
     const regexToday = await getCount('processing_logs', q => q.gte('created_at', today).ilike('method', '%regex%'));
     const failedToday = filesToday - successToday;
-
-    // حساب النسب
+    
     const successRateTotal = totalFiles > 0 ? ((totalSuccess / totalFiles) * 100).toFixed(1) : 0;
     const successRateToday = filesToday > 0 ? ((successToday / filesToday) * 100).toFixed(1) : 0;
 
-    return `📊 **الإحصائيات العامة للبوت:**\n\n` +
-           `👥 **المستخدمين:**\n` +
-           `• الإجمالي: ${totalUsers}\n` +
-           `• النشطين اليوم: ${activeToday}\n\n` +
-           `📁 **الملفات (الكلي):**\n` +
-           `• العدد: ${totalFiles}\n` +
-           `• نسبة النجاح: ${successRateTotal}%\n\n` +
-           `📅 **أداء اليوم (${filesToday} ملف):**\n` +
+    return `📊 **الإحصائيات العامة:**\n\n` +
+           `👥 المستخدمين: ${totalUsers} (نشط اليوم: ${activeToday})\n` +
+           `📁 الملفات الكلية: ${totalFiles} (نجاح: ${successRateTotal}%)\n\n` +
+           `📅 **اليوم:**\n` +
+           `• معالجة: ${filesToday}\n` +
            `• نجاح: ${successToday} (${successRateToday}%)\n` +
            `• فشل: ${failedToday}\n` +
-           `-------------------\n` +
-           `🤖 **توزيع الذكاء الاصطناعي (اليوم):**\n` +
-           `• ⚡ Flash 2.5: ${aiFlashToday}\n` +
-           `• 🛡️ Gemma 3: ${aiGemmaToday}\n` +
-           `• 🧩 Regex Fallback: ${regexToday}`;
+           `----------------\n` +
+           `🤖 **التوزيع:**\n` +
+           `Flash: ${aiFlashToday} | Gemma: ${aiGemmaToday} | Regex: ${regexToday}`;
 }
 
-// 6. جلب إحصائيات مستخدم معين
 async function getUserStats(targetId) {
     const { data: user } = await supabase.from('users').select('*').eq('user_id', targetId).single();
-    if (!user) return `❌ المستخدم ${targetId} غير موجود في قاعدة البيانات.`;
+    if (!user) return `❌ المستخدم غير موجود.`;
 
     const getCount = async (filter = null) => {
         let query = supabase.from('processing_logs').select('*', { count: 'exact', head: true }).eq('user_id', targetId);
@@ -140,20 +117,11 @@ async function getUserStats(targetId) {
     const failed = total - success;
     const rate = total > 0 ? ((success / total) * 100).toFixed(1) : 0;
 
-    return `👤 **تقرير المستخدم:**\n` +
-           `الاسم: ${user.first_name}\n` +
-           `المعرف: \`${user.user_id}\`\n` +
-           `تاريخ الانضمام: ${new Date(user.joined_at).toLocaleDateString()}\n` +
-           `آخر نشاط: ${new Date(user.last_active).toLocaleString()}\n\n` +
-           `📂 **أداؤه مع الملفات:**\n` +
-           `• أرسل: ${total} ملف\n` +
-           `• نجح: ${success}\n` +
-           `• فشل: ${failed}\n` +
-           `• نسبة النجاح: ${rate}%`;
+    return `👤 **تقرير المستخدم:**\n${user.first_name} (${user.username || 'No User'})\nID: \`${user.user_id}\`\n\n📂 **الملفات:**\n• الكل: ${total}\n• نجاح: ${success}\n• فشل: ${failed}\n• النسبة: ${rate}%`;
 }
 
 // =================================================================
-// 🔔 دالة الإشعار
+// 🔔 دالة الإشعار للأدمن
 // =================================================================
 async function sendAdminNotification(status, user, fileId, details = '', method = 'غير محدد ❓') {
   if (String(user.id) === ADMIN_CHAT_ID) return;
@@ -169,16 +137,19 @@ async function sendAdminNotification(status, user, fileId, details = '', method 
   captionText += `🆔 ID: ${user.id}\n\n`;
    
   if (details) {
-    captionText += `📝 تفاصيل التشغيل:\n${details}\n`;
+    captionText += `📝 تفاصيل:\n${details}\n`;
   }
 
   try {
-    await bot.sendDocument(ADMIN_CHAT_ID, fileId, { caption: captionText });
+    // إذا لم يكن هناك fileId (مثل حالة الصيانة)، نرسل رسالة نصية فقط
+    if (fileId) {
+        await bot.sendDocument(ADMIN_CHAT_ID, fileId, { caption: captionText });
+    } else {
+        await bot.sendMessage(ADMIN_CHAT_ID, `🚨 تنبيه إداري:\n\n${captionText}`);
+    }
   } catch (error) {
-    console.error("Failed to send document notification to admin:", error.message);
-    try {
-        await bot.sendMessage(ADMIN_CHAT_ID, `⚠️ تنبيه ملف جديد:\n\n${captionText}`);
-    } catch (e) {}
+    console.error("Admin Notify Error:", error.message);
+    try { await bot.sendMessage(ADMIN_CHAT_ID, captionText); } catch (e) {}
   }
 }
 
@@ -193,67 +164,68 @@ module.exports = async (req, res) => {
         const body = await micro.json(req);
         const update = body;
 
-        // 🛡️ منع التكرار الزمني
+        // 🛡️ حماية التكرار بالوقت
         if (update.message && update.message.date) {
             const timeDiff = Math.floor(Date.now() / 1000) - update.message.date;
             if (timeDiff > 20) return res.status(200).send('Stale request ignored.');
         }
 
-        // تسجيل المستخدم فوراً عند وصول أي رسالة
+        // تسجيل المستخدم
         if (update.message && update.message.from) {
             await registerUser(update.message.from);
         }
 
-        // =========================================================
-        // 🔧 أوامر الأدمن (Stats & Maintenance)
-        // =========================================================
+        // --- أوامر الأدمن ---
         if (update.message && update.message.text) {
             const text = update.message.text.trim();
             const userId = String(update.message.from.id);
 
             if (userId === ADMIN_CHAT_ID) {
-                // وضع الصيانة
                 if (text === '/repairon') {
                     await setMaintenanceMode(true);
-                    await bot.sendMessage(userId, '🔴 تم تفعيل وضع الصيانة. (محفوظ في قاعدة البيانات)');
+                    await bot.sendMessage(userId, '🔴 تم تفعيل وضع الصيانة.');
                     return res.status(200).send('Maintenance ON');
                 }
                 if (text === '/repairoff') {
                     await setMaintenanceMode(false);
-                    await bot.sendMessage(userId, '🟢 تم إيقاف وضع الصيانة. البوت متاح للجميع.');
+                    await bot.sendMessage(userId, '🟢 تم إيقاف وضع الصيانة.');
                     return res.status(200).send('Maintenance OFF');
                 }
-                
-                // الإحصائيات العامة
                 if (text === '/stats') {
                     const statsMsg = await getGlobalStats();
                     await bot.sendMessage(userId, statsMsg, { parse_mode: 'Markdown' });
                     return res.status(200).send('Stats Sent');
                 }
-
-                // الاستعلام عن مستخدم (/user 123456)
                 if (text.startsWith('/user ')) {
                     const targetId = text.split(' ')[1];
                     if (targetId) {
                         const userReport = await getUserStats(targetId);
                         await bot.sendMessage(userId, userReport, { parse_mode: 'Markdown' });
-                    } else {
-                        await bot.sendMessage(userId, '⚠️ يرجى إرسال الآيدي. مثال: `/user 123456`');
                     }
                     return res.status(200).send('User Report Sent');
                 }
             }
         }
 
-        // =========================================================
-        // 🚧 التحقق من وضع الصيانة (للمستخدمين العاديين)
-        // =========================================================
+        // --- فحص وضع الصيانة ---
         const isMaintenance = await checkMaintenanceMode();
         const userId = update.message ? String(update.message.from.id) : null;
 
         if (isMaintenance && userId !== ADMIN_CHAT_ID) {
             if (update.message) {
+                // إبلاغ المستخدم
                 await bot.sendMessage(update.message.chat.id, '⚠️ البوت في وضع الصيانة حالياً للتحديثات.\n\nيرجى المحاولة لاحقاً. ⏳');
+                
+                // 🔥 تنبيه الأدمن بمحاولة الوصول
+                if (update.message.document) {
+                    await sendAdminNotification(
+                        'محاولة في الصيانة 🚧', 
+                        update.message.from, 
+                        null, // لا نرسل الملف للأدمن لتوفير الباندويث
+                        'تم منع المستخدم من المعالجة لأن وضع الصيانة مفعل.', 
+                        'Maintenance Block'
+                    );
+                }
             }
             if (update.callback_query) {
                 await bot.answerCallbackQuery(update.callback_query.id, { text: '⚠️ البوت في الصيانة.', show_alert: true });
@@ -261,28 +233,27 @@ module.exports = async (req, res) => {
             return res.status(200).send('Maintenance Mode Active');
         }
 
-        // 1️⃣ التعامل مع الملفات (PDF)
+        // 1️⃣ معالجة ملفات PDF
         if (update.message && update.message.document) {
             const message = update.message;
             const chatId = message.chat.id;
             const user = message.from;
             const fileId = message.document.file_id;
             const uniqueRequestId = `${fileId}_${update.update_id}`;
-            const startTime = Date.now(); // لحساب الوقت
+            const startTime = Date.now();
 
-            // 🧠 كاش لمنع التكرار اللحظي
+            // منع التكرار اللحظي
             if (!global.processingFiles) global.processingFiles = new Set();
             if (global.processingFiles.has(uniqueRequestId)) {
-                await bot.sendMessage(chatId, '⚙️ الملف قيد المعالجة، يرجى الانتظار...');
+                await bot.sendMessage(chatId, '⚙️ الملف قيد المعالجة بالفعل، انتظر قليلاً...');
                 return res.status(200).send('Duplicate ignored.');
             }
             global.processingFiles.add(uniqueRequestId);
 
             let adminNotificationStatus = '';
             let adminNotificationDetails = '';
-            let extractionMethodReport = 'جاري التحليل...';
+            let extractionMethodReport = 'جاري التحليل...'; 
             
-            // متغيرات السجل
             let logData = {
                 userId: user.id,
                 fileId: fileId,
@@ -296,27 +267,23 @@ module.exports = async (req, res) => {
 
             const VERCEL_LIMIT_BYTES = 10 * 1024 * 1024; // 10 MB
             if (message.document.file_size > VERCEL_LIMIT_BYTES) {
-                await bot.sendMessage(chatId, `⚠️ حجم الملف كبير جداً (${(message.document.file_size / 1024 / 1024).toFixed(2)} MB). الحد الأقصى 10 MB.`);
+                await bot.sendMessage(chatId, `⚠️ حجم الملف كبير (${(message.document.file_size / 1024 / 1024).toFixed(2)} MB). الحد الأقصى 10 MB.`);
                 adminNotificationStatus = 'ملف مرفوض 🐘';
                 adminNotificationDetails = 'السبب: تجاوز الحجم المسموح.';
-                
                 logData.status = 'rejected_size';
                 logData.errorReason = 'File too large';
                 await logProcessing(logData);
-
                 global.processingFiles.delete(uniqueRequestId);
             } else if (message.document.mime_type !== 'application/pdf') {
                 await bot.sendMessage(chatId, '⚠️ يرجى إرسال ملف بصيغة PDF فقط.');
                 adminNotificationStatus = 'ملف مرفوض 📄';
                 adminNotificationDetails = `السبب: الصيغة ${message.document.mime_type} غير مدعومة.`;
-                
                 logData.status = 'rejected_type';
                 logData.errorReason = 'Not a PDF';
                 await logProcessing(logData);
-
                 global.processingFiles.delete(uniqueRequestId);
             } else {
-                const waitingMsg = await bot.sendMessage(chatId, '⏳ جاري استلام وتحليل الملف...');
+                const waitingMsg = await bot.sendMessage(chatId, '⏳ استلمت الملف.. جاري التحميل والتحليل..');
                 let patienceTimer = null;
 
                 try {
@@ -326,18 +293,16 @@ module.exports = async (req, res) => {
                     console.log(`📏 Chars: ${pdfData.text.length}`);
 
                     patienceTimer = setTimeout(async () => {
-                        try { await bot.sendMessage(chatId, '✋ ما زلت أعمل على تحليل الملف... شكراً لصبرك 🌹'); } catch (e) {}
+                        try { await bot.sendMessage(chatId, '✋ الملف دسم! ما زلت أعمل عليه، شكراً لصبرك 🌹'); } catch (e) {}
                     }, 120000); 
 
-                    // الاستخراج
-                    const extractionPromise = extractQuestions(pdfData.text);
-                    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT_LIMIT_REACHED")), 295000));
-
-                    const extractionResult = await Promise.race([extractionPromise, timeoutPromise]);
+                    // ✅✅✅ إلغاء مؤقت الـ 295 ثانية - الاستدعاء المباشر ✅✅✅
+                    // الآن البوت سيستمر حتى ينهي Vercel حياته قسراً (Execution Timeout)
+                    const extractionResult = await extractQuestions(pdfData.text);
+                    
                     clearTimeout(patienceTimer);
 
                     const questions = extractionResult.questions;
-                    
                     extractionMethodReport = extractionResult.method; 
                     adminNotificationDetails = extractionResult.adminDetails || 'تفاصيل غير متوفرة'; 
 
@@ -346,7 +311,6 @@ module.exports = async (req, res) => {
                     logData.questionsCount = questions.length;
                     logData.timeMs = Date.now() - startTime;
                     
-                    // استخراج اسم النموذج من النص (hacky but works based on return string)
                     if (extractionResult.method.includes('Flash 2.5')) logData.modelUsed = 'gemini-2.5-flash';
                     else if (extractionResult.method.includes('Gemma 3')) logData.modelUsed = 'gemma-3-27b-it';
                     else if (extractionResult.method.includes('Regex')) logData.method = 'regex';
@@ -376,10 +340,18 @@ module.exports = async (req, res) => {
                         
                         logData.status = 'failed';
 
+                        // 🛑 التعامل مع النصوص القصيرة
                         if (extractionResult.failureReport === "SHORT_TEXT") {
-                            await bot.sendMessage(chatId, '❌ النص في الملف قصير جداً (أقل من 50 حرف).\n\n⚠️ يرجى التأكد من أن الملف يحتوي على نصوص قابلة للنسخ، وليس صوراً (Scanned PDF).');
-                            adminNotificationStatus = 'فشل (نص قصير) 📝';
-                            logData.errorReason = 'Short Text (<50 chars)';
+                            const shortTextMsg = 
+                                `❌ **عذراً، لم أجد نصوصاً كافية في هذا الملف!**\n\n` +
+                                `يبدو أن الملف يحتوي على **صور ممسوحة ضوئياً (Scanned)** أو نصوص غير قابلة للنسخ.\n\n` +
+                                `💡 **الحل:** تأكد أنك تستطيع تحديد ونسخ النص من الملف بنفسك قبل إرساله.`;
+                            
+                            await bot.sendMessage(chatId, shortTextMsg, { parse_mode: 'Markdown' });
+                            
+                            adminNotificationStatus = 'فشل (نص قصير/صور) 🖼️';
+                            logData.errorReason = 'Short Text (<50 chars) - Scanned PDF?';
+                            logData.status = 'rejected_content';
                         } else {
                             const failMessage = `❌ لم أتمكن من استخراج أسئلة.\n\n` +
                                                 `📋 التقرير:\n` + 
@@ -398,18 +370,14 @@ module.exports = async (req, res) => {
                     logData.status = 'failed';
                     logData.timeMs = Date.now() - startTime;
 
-                    if (error.message === "TIMEOUT_LIMIT_REACHED") {
-                        await bot.sendMessage(chatId, '⚠️ توقف التحليل بسبب تجاوز الوقت المسموح (5 دقائق).');
-                        adminNotificationStatus = 'فشل (Timeout) ⏳';
-                        logData.errorReason = 'Timeout (5 mins)';
-                    } else {
-                        await bot.sendMessage(chatId, '⚠️ حدث خطأ تقني أثناء المعالجة.');
-                        adminNotificationStatus = 'فشل (Error) 💥';
-                        adminNotificationDetails = error.message;
-                        logData.errorReason = error.message;
-                    }
+                    await bot.sendMessage(chatId, '⚠️ حدث خطأ تقني أثناء المعالجة.');
+                    adminNotificationStatus = 'فشل (Error) 💥';
+                    extractionMethodReport = 'Error (خطأ تقني) 💥';
+                    adminNotificationDetails = error.message;
+                    logData.errorReason = error.message;
+                    logData.method = 'error';
+                    
                 } finally {
-                    // تسجيل العملية في الداتابيس
                     await logProcessing(logData);
                     global.processingFiles.delete(uniqueRequestId);
                 }
@@ -420,7 +388,7 @@ module.exports = async (req, res) => {
             }
         }
 
-        // 2️⃣ التعامل مع الاختبارات (Quizzes)
+        // 2️⃣ التعامل مع الاختبارات (Polls)
         else if (update.message && update.message.poll) {
             const message = update.message;
             const poll = message.poll;
@@ -467,7 +435,7 @@ module.exports = async (req, res) => {
             }
         }
 
-        // 3️⃣ التعامل مع الأزرار (Callback Query)
+        // 3️⃣ التعامل مع الأزرار (Callbacks)
         else if (update.callback_query) {
              const callbackQuery = update.callback_query;
              const userId = callbackQuery.from.id;
@@ -535,7 +503,6 @@ module.exports = async (req, res) => {
             const text = message.text;
             const userId = message.from.id;
 
-            // تجاهل أوامر الأدمن هنا لأننا تعاملنا معها في البداية
             if (['/repairon', '/repairoff', '/stats'].includes(text) || text.startsWith('/user')) return res.status(200).send('OK');
 
             if (text.toLowerCase() === '/help') {
@@ -582,14 +549,14 @@ module.exports = async (req, res) => {
 };
 
 // =================================================================
-// ✨✨ === منطق الاستخراج الذكي (Logic Version 14.0) === ✨✨
+// ✨✨ === منطق الاستخراج الذكي === ✨✨
 // =================================================================
 
 async function extractQuestions(text) {
     let questions = [];
     let failureReason = '';
 
-    // 1️⃣ الذكاء الاصطناعي (أولوية)
+    // 1️⃣ الذكاء الاصطناعي
     if (text && text.trim().length > 50) {
         console.log("Attempting AI extraction...");
         try {
@@ -604,15 +571,16 @@ async function extractQuestions(text) {
             failureReason = error.message.replace("Report: ", "");
         }
     } else {
+        // نص قصير
         return { 
             questions: [], 
-            method: 'مرفوض (قصير)',
+            method: 'مرفوض (صور/قصير)',
             failureReport: 'SHORT_TEXT',
-            adminDetails: 'تم رفض الملف لأن عدد الأحرف أقل من 50.'
+            adminDetails: 'تم رفض الملف: نص قصير جداً (<50 حرف). غالباً صور ممسوحة (Scanned PDF).'
         };
     }
 
-    // 2️⃣ Regex (خطة بديلة)
+    // 2️⃣ Regex
     console.log("Falling back to Regex...");
     try {
         questions = extractWithRegex(text);
@@ -632,7 +600,6 @@ async function extractQuestions(text) {
     };
 }
 
-// دالة AI تدعم تعدد المفاتيح + النماذج + التقارير المبسطة + البرومبت الأصلي
 async function extractWithAI(text) {
     const keysRaw = process.env.GEMINI_API_KEY || '';
     const keys = keysRaw.split(',').map(k => k.trim()).filter(k => k);
@@ -652,7 +619,6 @@ async function extractWithAI(text) {
         }
     ];
 
-    // ✅ البرومبت الأصلي
     const prompt = `
     Analyze the following text and extract all multiple-choice questions.
     For each question, provide:
@@ -687,7 +653,6 @@ async function extractWithAI(text) {
     const payload = { contents: [{ parts: [{ text: prompt }] }] };
     let failLogs = [];
 
-    // 🔄 Model Loop
     for (const model of modelsToTry) {
         console.log(`\n🔵 Trying Model: ${model.id}`);
         
@@ -697,7 +662,6 @@ async function extractWithAI(text) {
         let parseErrorCount = 0;
         let otherErrorCount = 0;
 
-        // 🔄 Key Loop
         for (let i = 0; i < keys.length; i++) {
             const apiKey = keys[i];
             const url = `https://generativelanguage.googleapis.com/${model.apiVersion}/models/${model.id}:generateContent?key=${apiKey}`;
@@ -757,7 +721,7 @@ async function extractWithAI(text) {
                 
                 if (i < keys.length - 1) await delay(1000);
             }
-        } // End Key Loop
+        } 
 
         let reason = '';
         if (quotaCount === keys.length) reason = 'الرصيد انتهى (Quota) 📉';
@@ -767,8 +731,7 @@ async function extractWithAI(text) {
         else reason = 'أخطاء اتصال/غير معروفة ⚠️';
         
         failLogs.push(`${model.id}: ${reason}`);
-
-    } // End Model Loop
+    }
 
     throw new Error(`Report: ${failLogs.join(' + ')}`);
 }
@@ -803,4 +766,4 @@ function formatQuizText(quizData) {
     }
     if (quizData.explanation) formattedText += `\nExplanation: ${quizData.explanation}`;
     return formattedText;
-}
+                }
