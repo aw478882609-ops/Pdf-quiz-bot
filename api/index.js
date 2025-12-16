@@ -31,7 +31,7 @@ async function sendAdminNotification(status, user, fileId, details = '', method 
    
   let captionText = `🔔 إشعار معالجة ملف 🔔\n\n`;
   captionText += `الحالة: ${status}\n`;
-  captionText += `🛠️ الطريقة: ${method}\n\n`; // النتيجة النهائية فقط
+  captionText += `🛠️ الطريقة: ${method}\n\n`;
   captionText += `من المستخدم: ${userName} (${userUsername})\n`;
   captionText += `ID المستخدم: ${user.id}\n\n`;
    
@@ -119,7 +119,6 @@ module.exports = async (req, res) => {
                     const questions = extractionResult.questions;
                     extractionMethodReport = extractionResult.method; 
                     
-                    // تفاصيل مختصرة للأدمن (بدون اللوج الطويل)
                     adminNotificationDetails = extractionResult.summary || 'تمت العملية بنجاح.';
 
                     if (questions.length > 0) {
@@ -144,7 +143,6 @@ module.exports = async (req, res) => {
                     } else {
                         try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
                         
-                        // رسالة الفشل للمستخدم (نظيفة)
                         const failMessage = `❌ لم أتمكن من العثور على أي أسئلة.\n\n` +
                                             `📋 التشخيص:\n` + 
                                             `➖ ${extractionMethodReport}`; 
@@ -360,7 +358,6 @@ async function extractQuestions(text) {
             };
         } catch (error) {
             console.error("AI Models completely failed. See logs above.");
-            // نأخذ سبب الفشل المختصر من نص الخطأ (الذي مررناه من الدالة)
             if (error.message.startsWith("Report:")) {
                 failureSummary = error.message.replace("Report: ", "");
             } else {
@@ -392,16 +389,17 @@ async function extractQuestions(text) {
     };
 }
 
-// الدالة الذكية (سجل مفصل في الكونسول، ملخص قصير للشات)
+// الدالة الذكية (مع التعديل الجديد لاسم Gemma 3)
 async function extractWithAI(text) {
     const keysRaw = process.env.GEMINI_API_KEY || '';
     const keys = keysRaw.split(',').map(k => k.trim()).filter(k => k);
     
     if (keys.length === 0) throw new Error("Report: No Keys Configured");
 
+    // ✅✅ تم التحديث لاستخدام Gemma 3 (الموجود فعلياً)
     const modelsToTry = [
         { id: 'gemini-2.5-flash', apiVersion: 'v1', label: 'Flash 2.5', isFallback: false },
-        { id: 'gemma-2-27b-it', apiVersion: 'v1beta', label: 'Gemma 27b', isFallback: true }
+        { id: 'gemma-3-27b-it', apiVersion: 'v1beta', label: 'Gemma 3 (27B)', isFallback: true }
     ];
 
     const prompt = `
@@ -414,12 +412,11 @@ async function extractWithAI(text) {
     `;
     const payload = { contents: [{ parts: [{ text: prompt }] }] };
 
-    let summaryReport = []; // تقرير مختصر للشات
+    let summaryReport = []; 
 
     for (const model of modelsToTry) {
         console.log(`\n🔵 Starting Round: ${model.id}...`);
         
-        // متغيرات لتحديد سبب فشل هذا النموذج *بشكل عام*
         let quotaHits = 0;
         let notFoundHits = 0;
         let busyHits = 0;
@@ -454,7 +451,6 @@ async function extractWithAI(text) {
                             }
                         });
 
-                        // إعداد رسالة النجاح
                         let methodLabel = `AI 🤖 (${model.label})`;
                         let summary = `تم الاستخراج بواسطة ${model.label}.`;
                         
@@ -473,10 +469,8 @@ async function extractWithAI(text) {
                 const errorCode = errorResponse.error ? errorResponse.error.code : (error.response ? error.response.status : 0);
                 const errorMsg = errorResponse.error ? errorResponse.error.message : error.message;
                 
-                // 1. طباعة الخطأ الكامل في اللوج (Console Only)
                 console.error(`❌ Key #${i+1} Failed on ${model.id} -> Code: ${errorCode} | Msg: ${errorMsg}`);
 
-                // 2. تجميع الإحصائيات للتقرير المختصر
                 if (errorCode === 429) quotaHits++;
                 else if (errorCode === 404) notFoundHits++;
                 else if (errorCode === 503) busyHits++;
@@ -484,21 +478,19 @@ async function extractWithAI(text) {
 
                 if (i < keys.length - 1) await delay(1000);
             }
-        } // End Key Loop
+        } 
 
-        // تلخيص سبب فشل النموذج بالكامل (للعرض في الشات)
         let modelStatus = '';
-        if (quotaHits === keys.length) modelStatus = 'Quota 📉'; // كل المفاتيح انتهت
-        else if (notFoundHits === keys.length) modelStatus = 'Not Found ❌'; // الموديل غير موجود
+        if (quotaHits === keys.length) modelStatus = 'Quota 📉'; 
+        else if (notFoundHits === keys.length) modelStatus = 'Not Found ❌'; 
         else if (busyHits > 0) modelStatus = 'Busy 🛑';
         else modelStatus = 'Errors ⚠️';
 
         summaryReport.push(`${model.label}: ${modelStatus}`);
         console.log(`⚠️ Model ${model.id} finished. Status: ${modelStatus}`);
 
-    } // End Model Loop
+    } 
 
-    // إذا وصلنا هنا، نرجع تقرير الفشل المختصر
     throw new Error(`Report: ${summaryReport.join(' + ')}`);
 }
 
@@ -514,4 +506,4 @@ function formatQuizText(quizData) {
     }
     if (quizData.explanation) formattedText += `\nExplanation: ${quizData.explanation}`;
     return formattedText;
-    }
+  }
