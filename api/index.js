@@ -156,7 +156,7 @@ module.exports = async (req, res) => {
                 if (!text || text.length < 50) {
                     await bot.sendMessage(chatId, '❌ <b>الملف لا يحتوي على نص قابل للقراءة.</b>', {parse_mode: 'HTML'});
                 } else {
-                    await bot.editMessageText('🤖 <b>يتم الآن التحليل بواسطة الذكاء الاصطناعي...</b>\n\n✨ ستظهر النتائج تلقائياً خلال دقيقة.', { 
+                    await bot.editMessageText('🤖 <b>يتم الآن التحليل بواسطة الذكاء الاصطناعي...</b>\n\n✨ ستظهر النتائج تلقائياً خلال دقائق.', { 
                         chat_id: chatId, 
                         message_id: waitMsg.message_id, 
                         parse_mode: 'HTML' 
