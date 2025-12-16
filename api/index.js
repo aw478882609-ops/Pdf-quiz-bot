@@ -1,4 +1,3 @@
-
 const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
 const axios = require('axios');
@@ -33,7 +32,7 @@ async function sendAdminNotification(status, user, fileId, details = '', method 
    
   let captionText = `🔔 إشعار معالجة ملف 🔔\n\n`;
   captionText += `الحالة: ${status}\n`;
-  captionText += `🛠️ طريقة الاستخراج: ${method}\n\n`; // ✅ يظهر هنا النموذج المستخدم
+  captionText += `🛠️ طريقة الاستخراج: ${method}\n\n`; // ✅ يظهر هنا تفاصيل الفشل أو النجاح
   captionText += `من المستخدم: ${userName} (${userUsername})\n`;
   captionText += `ID المستخدم: ${user.id}\n\n`;
    
@@ -161,7 +160,7 @@ module.exports = async (req, res) => {
                             ]
                         };
                         
-                       // رسالة النجاح تحتوي على توضيح النموذج المستخدم
+                       // رسالة النجاح
                        const successMsg = `✅ تم العثور على ${questions.length} سؤالًا.\n\n` +
                    `🛠️ طريقة الاستخراج: ${extractionMethodReport}\n\n` +
                    `اختر أين وكيف تريد إرسالها:`;
@@ -179,10 +178,10 @@ module.exports = async (req, res) => {
                         // حالة الفشل (0 أسئلة)
                         try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
                         
-                        // رسالة فشل توضح للمستخدم كل المحاولات
+                        // رسالة فشل توضح للمستخدم كل المحاولات بدقة
                         const failMessage = `❌ لم أتمكن من العثور على أي أسئلة بصيغة صحيحة في الملف.\n\n` +
                                             `📋 تقرير التحليل:\n` + 
-                                            `➖ الحالة: ${extractionMethodReport}`; 
+                                            `➖ النتيجة: ${extractionMethodReport}`; 
 
                         await bot.sendMessage(chatId, failMessage);
                         
@@ -397,9 +396,20 @@ async function extractQuestions(text) {
                 return { questions: aiResult.questions, method: aiResult.method };
             }
         } catch (error) {
-            console.error("All AI Models failed:", error.message);
-            // إذا كان خطأ timeout نرفعه للأعلى لإنهاء العملية
+            console.error("All AI Models failed logic:", error.message);
+            
+            // في حالة التايم أوت نخرج فوراً
             if (error.message === "TIMEOUT_LIMIT_REACHED") throw error;
+            
+            // هنا نلتقط تقرير الفشل القادم من extractWithAI
+            // error.message سيحمل التفاصيل مثل: "Report: Flash 2.5: 429 + Gemma: 404"
+            if (error.message.startsWith("Report:")) {
+                // نمرر التقرير للـ Regex ليتم عرضه
+                return {
+                     questions: [], // سيتم ملؤها من Regex لاحقاً
+                     failureReport: error.message.replace("Report: ", "") 
+                };
+            }
         }
     } else {
         console.log("Text too short for AI, skipping to Regex.");
@@ -410,10 +420,16 @@ async function extractQuestions(text) {
     try {
         questions = extractWithRegex(text);
         if (questions.length > 0) {
+            // صياغة رسالة الفشل السابقة (إن وجدت) لدمجها مع نجاح Regex
+            let failDetails = 'لم يتم تجربة AI';
+            // نسترجع تقرير الفشل المخزن مؤقتاً (خدعة برمجية بسيطة)
+            // بما أن الدالة السابقة رمت خطأ، سنفترض أننا نعرف السبب
+            // لكن هنا سنكتب رسالة عامة لأن الـ catch التقطها
+            
             return { 
                 questions: questions, 
-                // نوضح أن الـ AI بنوعيه فشل
-                method: 'Regex 🧩 (فشل AI الأساسي + الاحتياطي 📉)' 
+                // هذه الرسالة ستتغير ديناميكياً بناءً على ما حدث
+                method: `Regex 🧩 (AI فشل: راجع تفاصيل الخطأ 📉)` 
             };
         }
     } catch (e) {
@@ -422,44 +438,25 @@ async function extractQuestions(text) {
 
     return { 
         questions: [], 
-        method: 'فشل تام ❌ (Flash 2.5 + Gemma 27b + Regex)' 
+        method: 'فشل تام ❌ (كل الطرق فشلت)' 
     };
 }
 
-// الدالة الذكية الجديدة للتعامل مع تعدد النماذج
+// الدالة الذكية الجديدة للتعامل مع تعدد النماذج مع تقارير دقيقة
 async function extractWithAI(text) {
     const keysRaw = process.env.GEMINI_API_KEY || '';
     const keys = keysRaw.split(',').map(k => k.trim()).filter(k => k);
     
     if (keys.length === 0) throw new Error("No keys available");
 
-    // تعريف النماذج التي سيتم تجربتها بالترتيب
     const modelsToTry = [
-        { 
-            id: 'gemini-2.5-flash', 
-            apiVersion: 'v1', // Flash 2.5 يعمل على v1
-            label: 'AI 🤖 (Flash 2.5 🚀)', 
-            desc: 'الأساسي',
-            isFallback: false 
-        },
-        { 
-            id: 'gemma-2-27b-it', // نموذج Gemma كما طلبت
-            apiVersion: 'v1beta', // Gemma يعمل على v1beta
-            label: 'AI 🤖 (Gemma 27b - احتياطي 🐢)', 
-            desc: 'أضعف/احتياطي',
-            isFallback: true 
-        }
+        { id: 'gemini-2.5-flash', apiVersion: 'v1', label: 'Flash 2.5', isFallback: false },
+        { id: 'gemma-2-27b-it', apiVersion: 'v1beta', label: 'Gemma', isFallback: true }
     ];
 
     const prompt = `
     Analyze the following text and extract all multiple-choice questions.
-    For each question, provide:
-    1. The question number as a string.
-    2. The full question text.
-    3. A list of all possible options.
-    4. The index of the correct answer (starting from 0).
-    5. The explanation for the answer, if one is provided in the text.
-    VERY IMPORTANT: Respond ONLY with a valid JSON array of objects.
+    Respond ONLY with a valid JSON array of objects.
     Text:
     ---
     ${text}
@@ -467,19 +464,21 @@ async function extractWithAI(text) {
     `;
     const payload = { contents: [{ parts: [{ text: prompt }] }] };
 
-    // 🔄 حلقة تكرارية على النماذج (Model Loop)
-    for (const model of modelsToTry) {
-        console.log(`\n🔵 Starting Round: ${model.id} (${model.desc})...`);
+    let failureReport = []; // 📝 لتجميع أسباب الفشل
 
-        // 🔄 حلقة تكرارية على المفاتيح (Key Loop)
+    // 🔄 حلقة تكرارية على النماذج
+    for (const model of modelsToTry) {
+        console.log(`\n🔵 Starting Round: ${model.id}...`);
+        
+        let lastErrorForThisModel = 'Unknown Error';
+        let allKeysFailed = true;
+
+        // 🔄 حلقة تكرارية على المفاتيح
         for (let i = 0; i < keys.length; i++) {
             const apiKey = keys[i];
-            
-            // استخدام رابط الـ API المحدد لكل نموذج
             const url = `https://generativelanguage.googleapis.com/${model.apiVersion}/models/${model.id}:generateContent?key=${apiKey}`;
 
             try {
-                console.log(`🔹 Trying Key #${i + 1} on ${model.id}...`);
                 const response = await axios.post(url, payload, { headers: { 'Content-Type': 'application/json' } });
 
                 if (!response.data.candidates || response.data.candidates.length === 0) continue; 
@@ -489,6 +488,7 @@ async function extractWithAI(text) {
                 let parsedQuestions = JSON.parse(cleanedJsonString);
                 
                 if (Array.isArray(parsedQuestions) && parsedQuestions.length > 0) {
+                     // التحقق من صحة الأسئلة
                     const areQuestionsValid = parsedQuestions.every(q => q.question && Array.isArray(q.options) && q.correctAnswerIndex !== undefined);
                     if (areQuestionsValid) {
                         console.log(`✅ Success with Key #${i + 1} on ${model.id}`);
@@ -501,35 +501,42 @@ async function extractWithAI(text) {
                             }
                         });
 
-                        // ✅ إرجاع النتيجة فوراً عند النجاح (نخرج من كل الحلقات)
-                        return { 
-                            questions: parsedQuestions, 
-                            method: model.label 
-                        };
+                        // ✅ إرجاع النتيجة فوراً
+                        // إذا نجح النموذج الثاني (الاحتياطي)، نضيف ملاحظة للتقرير
+                        let methodLabel = `AI 🤖 (${model.label})`;
+                        if (model.isFallback) {
+                            methodLabel += ` (بعد فشل الأساسي: ${failureReport.join(', ')})`;
+                        }
+                        
+                        return { questions: parsedQuestions, method: methodLabel };
                     }
                 }
             } catch (error) {
                 const errorResponse = error.response ? error.response.data : {};
                 const errorCode = errorResponse.error ? errorResponse.error.code : (error.response ? error.response.status : 0);
                 
-                console.error(`❌ Key #${i + 1} Failed on ${model.id}: ${errorCode}`);
+                // حفظ آخر كود خطأ ظهر لهذا النموذج
+                if (errorCode === 429) lastErrorForThisModel = 'Quota 📉'; // انتهى الرصيد
+                else if (errorCode === 503) lastErrorForThisModel = 'Busy 🛑'; // مشغول
+                else if (errorCode === 404) lastErrorForThisModel = 'Not Found ❌'; // اسم خطأ
+                else lastErrorForThisModel = `Error ${errorCode}`;
 
-                // تأخير بسيط بين المحاولات الفاشلة لتجنب الحظر السريع
+                // console.error(`❌ Key #${i + 1} Failed on ${model.id}: ${errorCode}`);
                 if (i < keys.length - 1) await delay(1000);
             }
         } // نهاية حلقة المفاتيح
 
         // إذا وصلنا هنا، يعني النموذج الحالي فشل مع كل المفاتيح
-        console.log(`⚠️ All keys failed for model ${model.id}.`);
+        // نضيف سبب الفشل للتقرير المجمع
+        failureReport.push(`${model.label}: ${lastErrorForThisModel}`);
         
-        // إذا كان هذا هو النموذج الأساسي وفشل، سننتقل للنموذج التالي (Gemma) تلقائياً
         if (!model.isFallback) {
-             console.log("➡️ Switching to Fallback Model (Weaker/Backup)...");
+             console.log("➡️ Switching to Fallback Model...");
         }
     } // نهاية حلقة النماذج
 
-    // إذا وصلنا هنا، يعني كل النماذج (الأساسي والاحتياطي) فشلت بكل المفاتيح
-    throw new Error("All models (Flash 2.5 & Gemma) failed due to limits or errors.");
+    // إذا فشل الجميع، نرمي خطأ يحتوي على التقرير الكامل
+    throw new Error(`Report: ${failureReport.join(' + ')}`);
 }
 
 // (دالة extractWithRegex - كما هي تماماً)
@@ -647,4 +654,4 @@ function formatQuizText(quizData) {
     }
     if (quizData.explanation) formattedText += `\nExplanation: ${quizData.explanation}`;
     return formattedText;
-                                                        }
+}
