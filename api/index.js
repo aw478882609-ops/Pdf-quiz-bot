@@ -532,18 +532,18 @@ async function extractWithAI(text) {
             } catch (error) {
                 const errorResponse = error.response ? error.response.data : {};
                 const errorCode = errorResponse.error ? errorResponse.error.code : (error.response ? error.response.status : 0);
+                
+                // ✅ جلب الرسالة الخام كما هي
                 const errorMsg = errorResponse.error ? errorResponse.error.message : error.message;
                 
-                let logMsg = `Key #${i+1}: ${errorCode}`;
-                if (errorCode === 429) logMsg += ' (Quota)';
-                else if (errorCode === 404) logMsg += ' (Not Found)';
-                else if (errorCode === 503) logMsg += ' (Busy)';
-                else logMsg += ` (${errorMsg.substring(0, 20)}...)`;
+                // ✅ تنسيق الرسالة لعرض التفاصيل كاملة بدون اختصار
+                let logMsg = `Key #${i+1} [${model.id}] -> Code: ${errorCode} | 📢 Google Says: "${errorMsg}"`;
                 
+                // حفظ في السجل وطباعة في الكونسول
                 fullLog.push(logMsg);
-                console.log(`❌ ${model.id} - ${logMsg}`);
+                console.error(`❌ ${logMsg}`);
 
-                // إحصائيات للتقرير المختصر
+                // إحصائيات للتقرير المختصر (لا تؤثر على الطباعة المفصلة)
                 if (errorCode === 429) quotaHits++;
                 else if (errorCode === 404) notFoundHits++;
                 else if (errorCode === 503) busyHits++;
@@ -552,26 +552,6 @@ async function extractWithAI(text) {
                 // تأخير بسيط إذا لم يكن آخر مفتاح
                 if (i < keys.length - 1) await delay(1000);
             }
-        } // End Key Loop
-
-        let modelStatus = '';
-        if (quotaHits === keys.length) modelStatus = 'Quota 📉'; 
-        else if (notFoundHits === keys.length) modelStatus = 'Not Found ❌'; 
-        else if (busyHits > 0) modelStatus = 'Busy 🛑';
-        else modelStatus = 'Errors ⚠️';
-
-        summaryReport.push(`${model.label}: ${modelStatus}`);
-        fullLog.push(`⚠️ All keys failed for ${model.label}`);
-
-    } // End Model Loop
-
-    // إذا وصلنا هنا، يعني الفشل التام
-    const finalReport = `Report: ${summaryReport.join(' + ')}`;
-    // نرفق السجل الكامل مع رسالة الخطأ لنلتقطه في الدالة الرئيسية
-    const errorObj = new Error(finalReport);
-    errorObj.fullLog = fullLog.join('\n');
-    throw errorObj;
-}
 
 // (دالة Regex - كما هي تماماً)
 function extractWithRegex(text) {
