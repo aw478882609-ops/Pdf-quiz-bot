@@ -1,3 +1,4 @@
+
 const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
 const axios = require('axios');
@@ -10,8 +11,13 @@ const userState = {};
 
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 
-// دالة لإرسال إشعار للمشرف
-async function sendAdminNotification(status, user, fileId, details = '') {
+// دالة مساعدة للتأخير (لتجنب الحظر السريع بين المحاولات)
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// =================================================================
+// 🔔 دالة لإرسال إشعار للمشرف
+// =================================================================
+async function sendAdminNotification(status, user, fileId, details = '', method = 'غير محدد ❓') {
   if (String(user.id) === ADMIN_CHAT_ID) {
     console.log("User is the admin. Skipping self-notification.");
     return; 
@@ -24,12 +30,15 @@ async function sendAdminNotification(status, user, fileId, details = '') {
 
   const userName = `${user.first_name || ''} ${user.last_name || ''}`.trim();
   const userUsername = user.username ? `@${user.username}` : 'لا يوجد';
+   
   let captionText = `🔔 إشعار معالجة ملف 🔔\n\n`;
-  captionText += `الحالة: ${status}\n\n`;
-  captionText += `من المستخدم: ${userName} (${userUsername})\n\n`;
+  captionText += `الحالة: ${status}\n`;
+  captionText += `🛠️ طريقة الاستخراج: ${method}\n\n`; // ✅ يظهر هنا النموذج المستخدم
+  captionText += `من المستخدم: ${userName} (${userUsername})\n`;
   captionText += `ID المستخدم: ${user.id}\n\n`;
+   
   if (details) {
-    captionText += `تفاصيل: ${details}\n`;
+    captionText += `📝 تفاصيل: ${details}\n`;
   }
 
   try {
@@ -44,7 +53,9 @@ async function sendAdminNotification(status, user, fileId, details = '') {
   }
 }
 
-// وحدة التعامل مع الطلبات
+// =================================================================
+// ⚙️ وحدة التعامل مع الطلبات (Main Handler)
+// =================================================================
 module.exports = async (req, res) => {
     try {
         if (req.method !== 'POST') {
@@ -87,23 +98,25 @@ module.exports = async (req, res) => {
 
             let adminNotificationStatus = '';
             let adminNotificationDetails = '';
+            let extractionMethodReport = 'جاري التحليل... ⏳';
 
             const VERCEL_LIMIT_BYTES = 10 * 1024 * 1024; // 10 MB
             if (message.document.file_size > VERCEL_LIMIT_BYTES) {
                 await bot.sendMessage(chatId, `⚠️ عذرًا، حجم الملف يتجاوز الحد المسموح به (${'10 MB'}).`);
                 adminNotificationStatus = 'ملف مرفوض 🐘';
                 adminNotificationDetails = 'السبب: حجم الملف أكبر من 10 ميجا.';
+                extractionMethodReport = 'لم يتم الفحص (حجم كبير)';
                 global.processingFiles.delete(uniqueRequestId);
             } else if (message.document.mime_type !== 'application/pdf') {
                 await bot.sendMessage(chatId, '⚠️ يرجى إرسال ملف بصيغة PDF فقط.');
                 adminNotificationStatus = 'ملف مرفوض 📄';
                 adminNotificationDetails = `السبب: نوع الملف ليس PDF.`;
+                extractionMethodReport = 'لم يتم الفحص (صيغة خاطئة)';
                 global.processingFiles.delete(uniqueRequestId);
             } else {
                 // ⏳ رسالة البداية
                 const waitingMsg = await bot.sendMessage(chatId, '⏳ استلمت الملف.. جاري التحميل والتحليل..');
                 
-                // متغير لتخزين مؤقت "رسالة التصبير"
                 let patienceTimer = null;
 
                 try {
@@ -113,37 +126,32 @@ module.exports = async (req, res) => {
                     const pdfData = await pdf(dataBuffer);
                     console.log(`📏 [BENCHMARK] Total Characters: ${pdfData.text.length}`);
 
-                    // =========================================================
-                    // ⏱️ إعداد المؤقتات (رسالة التصبير + المهلة النهائية)
-                    // =========================================================
-
-                    // 1. مؤقت رسالة "ما زلت أعمل" (بعد دقيقتين - 120 ثانية)
+                    // إعداد المؤقتات
                     patienceTimer = setTimeout(async () => {
                         try {
                             await bot.sendMessage(chatId, '✋ ما زلت أعمل على تحليل الملف، يبدو أنه كبير ومليء بالمعلومات.. شكراً لصبرك 🌹');
                         } catch (e) { console.error("Failed to send patience msg", e); }
                     }, 120000); 
 
-                    // 2. الوعد بالتحليل (العملية الأساسية)
+                    // تشغيل دالة الاستخراج (التي تحتوي الآن على منطق التبديل بين النماذج)
                     const extractionPromise = extractQuestions(pdfData.text);
 
-                    // 3. الوعد بالانفجار (Timeout عند 295 ثانية)
                     const timeoutPromise = new Promise((_, reject) => {
                         setTimeout(() => {
                             reject(new Error("TIMEOUT_LIMIT_REACHED"));
                         }, 295000); 
                     });
 
-                    // 🏁 السباق!
+                    // 🏁 تنفيذ الاستخراج
                     const extractionResult = await Promise.race([extractionPromise, timeoutPromise]);
 
-                    // ✅ وصلنا هنا يعني التحليل نجح قبل الوقت -> نلغي مؤقت التصبير فوراً
                     clearTimeout(patienceTimer);
 
                     const questions = extractionResult.questions;
-                    const extractionMethod = extractionResult.method;
+                    extractionMethodReport = extractionResult.method; 
 
                     if (questions.length > 0) {
+                        // حالة النجاح
                         userState[user.id] = { questions: questions };
                         const keyboard = {
                             inline_keyboard: [
@@ -153,10 +161,11 @@ module.exports = async (req, res) => {
                             ]
                         };
                         
+                       // رسالة النجاح تحتوي على توضيح النموذج المستخدم
                        const successMsg = `✅ تم العثور على ${questions.length} سؤالًا.\n\n` +
-                   `🛠️ طريقة الاستخراج: ${extractionMethod}\n\n` +
+                   `🛠️ طريقة الاستخراج: ${extractionMethodReport}\n\n` +
                    `اختر أين وكيف تريد إرسالها:`;
-                      
+                       
                         try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
 
                         await bot.sendMessage(chatId, successMsg, {
@@ -164,32 +173,38 @@ module.exports = async (req, res) => {
                             reply_markup: keyboard
                         });
                         adminNotificationStatus = 'نجاح ✅';
-                        adminNotificationDetails = `تم العثور على ${questions.length} سؤال باستخدام (${extractionMethod}).`;
+                        adminNotificationDetails = `تم العثور على ${questions.length} سؤال.`;
+
                     } else {
+                        // حالة الفشل (0 أسئلة)
                         try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
-                        await bot.sendMessage(chatId, '❌ لم أتمكن من العثور على أي أسئلة بصيغة صحيحة في الملف.');
-                        adminNotificationStatus = 'نجاح (لكن فارغ) 🤷‍♂️';
-                        adminNotificationDetails = 'تمت معالجة الملف لكن لم يتم العثور على أسئلة.';
+                        
+                        // رسالة فشل توضح للمستخدم كل المحاولات
+                        const failMessage = `❌ لم أتمكن من العثور على أي أسئلة بصيغة صحيحة في الملف.\n\n` +
+                                            `📋 تقرير التحليل:\n` + 
+                                            `➖ الحالة: ${extractionMethodReport}`; 
+
+                        await bot.sendMessage(chatId, failMessage);
+                        
+                        adminNotificationStatus = 'فشل (0 أسئلة) ❌';
+                        adminNotificationDetails = `النتيجة 0 أسئلة. التقرير: ${extractionMethodReport}`;
                     }
+
                 } catch (error) {
                     console.error("Error processing PDF:", error);
                     
-                    // نلغي مؤقت التصبير في حالة الخطأ أيضاً
                     if (patienceTimer) clearTimeout(patienceTimer);
-
                     try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
 
-                    // 🚨 التعامل مع خطأ انتهاء الوقت خصيصاً
                     if (error.message === "TIMEOUT_LIMIT_REACHED") {
-                        // الرسالة النظيفة (بدون نجوم)
                         await bot.sendMessage(chatId, '⚠️ عذراً، عملية التحليل استغرقت وقتاً أطول من المسموح (5 دقائق). \n\n🔴 السبب: عدد صفحات أو أحرف الملف ضخم جداً.\n✂️ الحل: يرجى تقسيم ملف الـ PDF إلى أجزاء أصغر وإرسال كل جزء على حدة.');
                         
-                        // إشعار المشرف بحالة الـ Timeout
                         adminNotificationStatus = 'فشل (انتهاء الوقت) ⏳';
-                        adminNotificationDetails = `تم قطع العملية عند الثانية 295 لأن الملف كان ضخماً جداً ولم ينته التحليل.`;
+                        adminNotificationDetails = `انقطع الاتصال عند 295 ثانية.`;
+                        extractionMethodReport = 'Timeout (توقف أثناء التحليل)';
                     } else {
                         await bot.sendMessage(chatId, '⚠️ حدث خطأ أثناء معالجة الملف. يرجى التأكد من أن الملف سليم.');
-                        adminNotificationStatus = 'فشل ❌';
+                        adminNotificationStatus = 'فشل (خطأ تقني) 💥';
                         adminNotificationDetails = `السبب: ${error.message}`;
                     }
                 } finally {
@@ -198,11 +213,11 @@ module.exports = async (req, res) => {
             }
 
             if (adminNotificationStatus) {
-                await sendAdminNotification(adminNotificationStatus, user, fileId, adminNotificationDetails);
+                await sendAdminNotification(adminNotificationStatus, user, fileId, adminNotificationDetails, extractionMethodReport);
             }
         }
 
-        // 2️⃣ التعامل مع الاختبارات (Quizzes) - (نفس الكود السابق تماماً)
+        // 2️⃣ التعامل مع الاختبارات (Quizzes)
         else if (update.message && update.message.poll) {
             const message = update.message;
             const poll = message.poll;
@@ -249,7 +264,7 @@ module.exports = async (req, res) => {
             }
         }
 
-        // 3️⃣ التعامل مع الضغط على الأزرار (Callback Query) - (نفس الكود السابق تماماً)
+        // 3️⃣ التعامل مع الضغط على الأزرار (Callback Query)
         else if (update.callback_query) {
              const callbackQuery = update.callback_query;
              const userId = callbackQuery.from.id;
@@ -314,7 +329,7 @@ module.exports = async (req, res) => {
              }
         }
         
-        // 4️⃣ التعامل مع الرسائل النصية - (نفس الكود السابق تماماً)
+        // 4️⃣ التعامل مع الرسائل النصية
         else if (update.message && update.message.text) {
             const message = update.message;
             const chatId = message.chat.id;
@@ -366,117 +381,158 @@ module.exports = async (req, res) => {
 };
 
 // =================================================================
-// ✨✨ === قسم الدوال الخاصة باستخراج الأسئلة === ✨✨
+// ✨✨ === قسم الدوال الخاصة باستخراج الأسئلة (محدث بالكامل) === ✨✨
 // =================================================================
 
 async function extractQuestions(text) {
     let questions = [];
 
-    // محاولة الذكاء الاصطناعي
+    // 1️⃣ محاولة الذكاء الاصطناعي (بنظام الدورتين: الأساسي ثم الاحتياطي)
     if (text.trim().length > 50) {
-        console.log("Attempting AI extraction first...");
+        console.log("Attempting AI extraction (Multi-Model Strategy)...");
         try {
-            questions = await extractWithAI(text);
-            if (questions.length > 0) {
-                return { questions: questions, method: 'AI 🤖' };
+            // استدعاء دالة الذكاء الاصطناعي التي تدير النماذج
+            const aiResult = await extractWithAI(text);
+            if (aiResult.questions.length > 0) {
+                return { questions: aiResult.questions, method: aiResult.method };
             }
         } catch (error) {
-            console.error("All AI Keys failed or TIMEOUT:", error.message);
-            // إعادة رمي خطأ الـ Timeout ليلتقطه الكود الرئيسي
+            console.error("All AI Models failed:", error.message);
+            // إذا كان خطأ timeout نرفعه للأعلى لإنهاء العملية
             if (error.message === "TIMEOUT_LIMIT_REACHED") throw error;
         }
+    } else {
+        console.log("Text too short for AI, skipping to Regex.");
     }
 
-    // محاولة Regex
+    // 2️⃣ محاولة Regex (الملاذ الأخير إذا فشل كل شيء)
     console.log("Falling back to Regex extraction...");
     try {
         questions = extractWithRegex(text);
         if (questions.length > 0) {
-            return { questions: questions, method: 'Regex 🧩' };
+            return { 
+                questions: questions, 
+                // نوضح أن الـ AI بنوعيه فشل
+                method: 'Regex 🧩 (فشل AI الأساسي + الاحتياطي 📉)' 
+            };
         }
     } catch (e) {
         console.error("Regex extraction also failed:", e);
     }
 
-    return { questions: [], method: 'None ❌' };
+    return { 
+        questions: [], 
+        method: 'فشل تام ❌ (Flash 2.5 + Gemma 27b + Regex)' 
+    };
 }
 
-// (دالة extractWithAI المُعدّلة لدعم تعدد المفاتيح بالتتابع)
+// الدالة الذكية الجديدة للتعامل مع تعدد النماذج
 async function extractWithAI(text) {
     const keysRaw = process.env.GEMINI_API_KEY || '';
     const keys = keysRaw.split(',').map(k => k.trim()).filter(k => k);
     
-    if (keys.length === 0) return [];
+    if (keys.length === 0) throw new Error("No keys available");
+
+    // تعريف النماذج التي سيتم تجربتها بالترتيب
+    const modelsToTry = [
+        { 
+            id: 'gemini-2.5-flash', 
+            apiVersion: 'v1', // Flash 2.5 يعمل على v1
+            label: 'AI 🤖 (Flash 2.5 🚀)', 
+            desc: 'الأساسي',
+            isFallback: false 
+        },
+        { 
+            id: 'gemma-2-27b-it', // نموذج Gemma كما طلبت
+            apiVersion: 'v1beta', // Gemma يعمل على v1beta
+            label: 'AI 🤖 (Gemma 27b - احتياطي 🐢)', 
+            desc: 'أضعف/احتياطي',
+            isFallback: true 
+        }
+    ];
 
     const prompt = `
     Analyze the following text and extract all multiple-choice questions.
     For each question, provide:
-    1. The question number as a string (e.g., "1", "Q2", "٣"), if it exists.
+    1. The question number as a string.
     2. The full question text.
     3. A list of all possible options.
     4. The index of the correct answer (starting from 0).
     5. The explanation for the answer, if one is provided in the text.
     VERY IMPORTANT: Respond ONLY with a valid JSON array of objects.
-    [
-      {
-        "questionNumber": "1",
-        "question": "Example Question?",
-        "options": ["Option A", "Option B"],
-        "correctAnswerIndex": 0,
-        "explanation": "Explanation here"
-      }
-    ]
     Text:
     ---
     ${text}
     ---
     `;
+    const payload = { contents: [{ parts: [{ text: prompt }] }] };
 
-    const payload = {
-        contents: [{ parts: [{ text: prompt }] }]
-    };
+    // 🔄 حلقة تكرارية على النماذج (Model Loop)
+    for (const model of modelsToTry) {
+        console.log(`\n🔵 Starting Round: ${model.id} (${model.desc})...`);
 
-    // 🔁 الحلقة التكرارية: جرب المفتاح الأول، إذا فشل جرب الثاني...
-    for (let i = 0; i < keys.length; i++) {
-        const apiKey = keys[i];
-        const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-
-        try {
-            console.log(`🔄 Trying API Key #${i + 1}...`);
-            const response = await axios.post(url, payload, {
-                headers: { 'Content-Type': 'application/json' }
-            });
-
-            if (!response.data.candidates || response.data.candidates.length === 0) continue; 
-
-            const aiResponseText = response.data.candidates[0].content.parts[0].text;
-            const cleanedJsonString = aiResponseText.replace(/```json/g, '').replace(/```/g, '').trim();
-            let parsedQuestions = JSON.parse(cleanedJsonString);
+        // 🔄 حلقة تكرارية على المفاتيح (Key Loop)
+        for (let i = 0; i < keys.length; i++) {
+            const apiKey = keys[i];
             
-            if (Array.isArray(parsedQuestions) && parsedQuestions.length > 0) {
-                const areQuestionsValid = parsedQuestions.every(q => q.question && Array.isArray(q.options) && q.correctAnswerIndex !== undefined);
-                if (areQuestionsValid) {
-                    console.log(`✅ Success with Key #${i + 1}: Extracted ${parsedQuestions.length} questions.`);
-                    parsedQuestions.forEach(q => {
-                        if (q.questionNumber) {
-                            q.question = `${q.questionNumber}) ${q.question}`;
-                            delete q.questionNumber;
-                        }
-                    });
-                    return parsedQuestions;
+            // استخدام رابط الـ API المحدد لكل نموذج
+            const url = `https://generativelanguage.googleapis.com/${model.apiVersion}/models/${model.id}:generateContent?key=${apiKey}`;
+
+            try {
+                console.log(`🔹 Trying Key #${i + 1} on ${model.id}...`);
+                const response = await axios.post(url, payload, { headers: { 'Content-Type': 'application/json' } });
+
+                if (!response.data.candidates || response.data.candidates.length === 0) continue; 
+
+                const aiResponseText = response.data.candidates[0].content.parts[0].text;
+                const cleanedJsonString = aiResponseText.replace(/```json/g, '').replace(/```/g, '').trim();
+                let parsedQuestions = JSON.parse(cleanedJsonString);
+                
+                if (Array.isArray(parsedQuestions) && parsedQuestions.length > 0) {
+                    const areQuestionsValid = parsedQuestions.every(q => q.question && Array.isArray(q.options) && q.correctAnswerIndex !== undefined);
+                    if (areQuestionsValid) {
+                        console.log(`✅ Success with Key #${i + 1} on ${model.id}`);
+                        
+                        // تجهيز الأسئلة
+                        parsedQuestions.forEach(q => {
+                            if (q.questionNumber) {
+                                q.question = `${q.questionNumber}) ${q.question}`;
+                                delete q.questionNumber;
+                            }
+                        });
+
+                        // ✅ إرجاع النتيجة فوراً عند النجاح (نخرج من كل الحلقات)
+                        return { 
+                            questions: parsedQuestions, 
+                            method: model.label 
+                        };
+                    }
                 }
+            } catch (error) {
+                const errorResponse = error.response ? error.response.data : {};
+                const errorCode = errorResponse.error ? errorResponse.error.code : (error.response ? error.response.status : 0);
+                
+                console.error(`❌ Key #${i + 1} Failed on ${model.id}: ${errorCode}`);
+
+                // تأخير بسيط بين المحاولات الفاشلة لتجنب الحظر السريع
+                if (i < keys.length - 1) await delay(1000);
             }
-        } catch (error) {
-            const errorMsg = error.response ? JSON.stringify(error.response.data) : error.message;
-            console.error(`❌ Key #${i + 1} Failed: ${errorMsg}`);
-            console.log("➡️ Switching to next key...");
+        } // نهاية حلقة المفاتيح
+
+        // إذا وصلنا هنا، يعني النموذج الحالي فشل مع كل المفاتيح
+        console.log(`⚠️ All keys failed for model ${model.id}.`);
+        
+        // إذا كان هذا هو النموذج الأساسي وفشل، سننتقل للنموذج التالي (Gemma) تلقائياً
+        if (!model.isFallback) {
+             console.log("➡️ Switching to Fallback Model (Weaker/Backup)...");
         }
-    }
-    throw new Error("All provided API keys failed.");
+    } // نهاية حلقة النماذج
+
+    // إذا وصلنا هنا، يعني كل النماذج (الأساسي والاحتياطي) فشلت بكل المفاتيح
+    throw new Error("All models (Flash 2.5 & Gemma) failed due to limits or errors.");
 }
 
-
-// (دالة extractWithRegex - كما هي)
+// (دالة extractWithRegex - كما هي تماماً)
 function extractWithRegex(text) {
     text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\f/g, '\n').replace(/\u2028|\u2029/g, '\n');
     text = text.replace(/\n{2,}/g, '\n');
@@ -591,4 +647,4 @@ function formatQuizText(quizData) {
     }
     if (quizData.explanation) formattedText += `\nExplanation: ${quizData.explanation}`;
     return formattedText;
-  }
+                                                        }
