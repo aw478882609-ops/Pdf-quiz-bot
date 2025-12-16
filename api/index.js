@@ -1,4 +1,4 @@
-// ==== بداية كود Vercel الكامل (api/index.js) - Version 17.0 (Maintenance Notify + No Custom Timeout) ====
+// ==== بداية كود Vercel الكامل (api/index.js) - Version 18.0 (Char Limit + Timeout Kill Switch) ====
 
 const TelegramBot = require('node-telegram-bot-api');
 const pdf = require('pdf-parse');
@@ -81,24 +81,15 @@ async function getGlobalStats() {
     const totalSuccess = await getCount('processing_logs', q => q.eq('status', 'success'));
     const filesToday = await getCount('processing_logs', q => q.gte('created_at', today));
     const successToday = await getCount('processing_logs', q => q.gte('created_at', today).eq('status', 'success'));
-    const aiFlashToday = await getCount('processing_logs', q => q.gte('created_at', today).eq('model_used', 'gemini-2.5-flash'));
-    const aiGemmaToday = await getCount('processing_logs', q => q.gte('created_at', today).eq('model_used', 'gemma-3-27b-it'));
-    const regexToday = await getCount('processing_logs', q => q.gte('created_at', today).ilike('method', '%regex%'));
-    const failedToday = filesToday - successToday;
     
     const successRateTotal = totalFiles > 0 ? ((totalSuccess / totalFiles) * 100).toFixed(1) : 0;
-    const successRateToday = filesToday > 0 ? ((successToday / filesToday) * 100).toFixed(1) : 0;
 
     return `📊 **الإحصائيات العامة:**\n\n` +
            `👥 المستخدمين: ${totalUsers} (نشط اليوم: ${activeToday})\n` +
            `📁 الملفات الكلية: ${totalFiles} (نجاح: ${successRateTotal}%)\n\n` +
            `📅 **اليوم:**\n` +
            `• معالجة: ${filesToday}\n` +
-           `• نجاح: ${successToday} (${successRateToday}%)\n` +
-           `• فشل: ${failedToday}\n` +
-           `----------------\n` +
-           `🤖 **التوزيع:**\n` +
-           `Flash: ${aiFlashToday} | Gemma: ${aiGemmaToday} | Regex: ${regexToday}`;
+           `• نجاح: ${successToday}\n`;
 }
 
 async function getUserStats(targetId) {
@@ -117,12 +108,9 @@ async function getUserStats(targetId) {
     const failed = total - success;
     const rate = total > 0 ? ((success / total) * 100).toFixed(1) : 0;
 
-    return `👤 **تقرير المستخدم:**\n${user.first_name} (${user.username || 'No User'})\nID: \`${user.user_id}\`\n\n📂 **الملفات:**\n• الكل: ${total}\n• نجاح: ${success}\n• فشل: ${failed}\n• النسبة: ${rate}%`;
+    return `👤 **تقرير المستخدم:**\n${user.first_name}\nID: \`${user.user_id}\`\n\n📂 **الملفات:**\n• الكل: ${total}\n• نجاح: ${success}\n• فشل: ${failed}\n• النسبة: ${rate}%`;
 }
 
-// =================================================================
-// 🔔 دالة الإشعار للأدمن
-// =================================================================
 async function sendAdminNotification(status, user, fileId, details = '', method = 'غير محدد ❓') {
   if (String(user.id) === ADMIN_CHAT_ID) return;
   if (!ADMIN_CHAT_ID) return;
@@ -136,21 +124,15 @@ async function sendAdminNotification(status, user, fileId, details = '', method 
   captionText += `👤 المستخدم: ${userName} (${userUsername})\n`;
   captionText += `🆔 ID: ${user.id}\n\n`;
    
-  if (details) {
-    captionText += `📝 تفاصيل:\n${details}\n`;
-  }
+  if (details) captionText += `📝 تفاصيل:\n${details}\n`;
 
   try {
-    // إذا لم يكن هناك fileId (مثل حالة الصيانة)، نرسل رسالة نصية فقط
     if (fileId) {
         await bot.sendDocument(ADMIN_CHAT_ID, fileId, { caption: captionText });
     } else {
-        await bot.sendMessage(ADMIN_CHAT_ID, `🚨 تنبيه إداري:\n\n${captionText}`);
+        await bot.sendMessage(ADMIN_CHAT_ID, `🚨 تنبيه:\n\n${captionText}`);
     }
-  } catch (error) {
-    console.error("Admin Notify Error:", error.message);
-    try { await bot.sendMessage(ADMIN_CHAT_ID, captionText); } catch (e) {}
-  }
+  } catch (error) { try { await bot.sendMessage(ADMIN_CHAT_ID, captionText); } catch (e) {} }
 }
 
 // =================================================================
@@ -170,7 +152,6 @@ module.exports = async (req, res) => {
             if (timeDiff > 20) return res.status(200).send('Stale request ignored.');
         }
 
-        // تسجيل المستخدم
         if (update.message && update.message.from) {
             await registerUser(update.message.from);
         }
@@ -213,18 +194,9 @@ module.exports = async (req, res) => {
 
         if (isMaintenance && userId !== ADMIN_CHAT_ID) {
             if (update.message) {
-                // إبلاغ المستخدم
                 await bot.sendMessage(update.message.chat.id, '⚠️ البوت في وضع الصيانة حالياً للتحديثات.\n\nيرجى المحاولة لاحقاً. ⏳');
-                
-                // 🔥 تنبيه الأدمن بمحاولة الوصول
                 if (update.message.document) {
-                    await sendAdminNotification(
-                        'محاولة في الصيانة 🚧', 
-                        update.message.from, 
-                        null, // لا نرسل الملف للأدمن لتوفير الباندويث
-                        'تم منع المستخدم من المعالجة لأن وضع الصيانة مفعل.', 
-                        'Maintenance Block'
-                    );
+                    await sendAdminNotification('محاولة في الصيانة 🚧', update.message.from, null, 'تم منع المستخدم.', 'Maintenance Block');
                 }
             }
             if (update.callback_query) {
@@ -242,7 +214,6 @@ module.exports = async (req, res) => {
             const uniqueRequestId = `${fileId}_${update.update_id}`;
             const startTime = Date.now();
 
-            // منع التكرار اللحظي
             if (!global.processingFiles) global.processingFiles = new Set();
             if (global.processingFiles.has(uniqueRequestId)) {
                 await bot.sendMessage(chatId, '⚙️ الملف قيد المعالجة بالفعل، انتظر قليلاً...');
@@ -290,23 +261,69 @@ module.exports = async (req, res) => {
                     const fileLink = await bot.getFileLink(fileId);
                     const response = await axios.get(fileLink, { responseType: 'arraybuffer' });
                     const pdfData = await pdf(Buffer.from(response.data));
-                    console.log(`📏 Chars: ${pdfData.text.length}`);
+                    
+                    // ✅ حساب عدد الأحرف
+                    const charCount = pdfData.text ? pdfData.text.length : 0;
+                    console.log(`📏 Chars: ${charCount}`);
+
+                    // 🛑 [1] التحقق من الحد الأقصى (50,000 حرف)
+                    // نستخدم 55,000 كحد مسموح به قليلاً قبل الرفض القاطع
+                    if (charCount > 55000) {
+                        const errorMsg = `❌ **الملف طويل جداً!**\n\n` +
+                                         `📏 عدد الأحرف: **${charCount.toLocaleString()}**\n` +
+                                         `⛔ الحد الأقصى المسموح به: **50,000** حرف.\n\n` +
+                                         `يرجى تقسيم الملف أو إرسال جزء منه.`;
+                        
+                        await bot.sendMessage(chatId, errorMsg, { parse_mode: 'Markdown' });
+                        try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
+                        
+                        adminNotificationStatus = 'مرفوض (طويل جداً) 📏';
+                        adminNotificationDetails = `عدد الأحرف: ${charCount}`;
+                        logData.status = 'rejected_length';
+                        logData.errorReason = `Too long: ${charCount} chars`;
+                        
+                        await logProcessing(logData);
+                        await sendAdminNotification(adminNotificationStatus, user, fileId, adminNotificationDetails, 'Check Length');
+                        global.processingFiles.delete(uniqueRequestId);
+                        return res.status(200).send('OK');
+                    }
+
+                    // 🛑 [2] التحقق من الحد الأدنى (50 حرف - صور ممسوحة)
+                    if (charCount < 50) {
+                        const errorMsg = `❌ **النص في الملف قصير جداً!**\n` +
+                                         `📏 عدد الأحرف: **${charCount}**\n\n` +
+                                         `⚠️ هذا يعني غالباً أن الملف عبارة عن **صور (Scanned PDF)** ولا يحتوي على نصوص قابلة للنسخ والتحليل.\n` +
+                                         `تأكد من أنك تستطيع نسخ النص من الملف يدوياً.`;
+
+                        await bot.sendMessage(chatId, errorMsg, { parse_mode: 'Markdown' });
+                        try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
+
+                        adminNotificationStatus = 'مرفوض (نص قصير/صور) 🖼️';
+                        adminNotificationDetails = `عدد الأحرف: ${charCount}`;
+                        logData.status = 'rejected_content';
+                        logData.errorReason = `Too short: ${charCount} chars`;
+
+                        await logProcessing(logData);
+                        await sendAdminNotification(adminNotificationStatus, user, fileId, adminNotificationDetails, 'Check Content');
+                        global.processingFiles.delete(uniqueRequestId);
+                        return res.status(200).send('OK');
+                    }
 
                     patienceTimer = setTimeout(async () => {
                         try { await bot.sendMessage(chatId, '✋ الملف دسم! ما زلت أعمل عليه، شكراً لصبرك 🌹'); } catch (e) {}
                     }, 120000); 
 
-                    // ✅✅✅ إلغاء مؤقت الـ 295 ثانية - الاستدعاء المباشر ✅✅✅
-                    // الآن البوت سيستمر حتى ينهي Vercel حياته قسراً (Execution Timeout)
-                    const extractionResult = await extractQuestions(pdfData.text);
-                    
+                    // ✅ [3] تشغيل الاستخراج مع نظام القتل (297 ثانية)
+                    const extractionPromise = extractQuestions(pdfData.text);
+                    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("TIMEOUT_LIMIT_REACHED")), 297000)); // 297 Seconds
+
+                    const extractionResult = await Promise.race([extractionPromise, timeoutPromise]);
                     clearTimeout(patienceTimer);
 
                     const questions = extractionResult.questions;
                     extractionMethodReport = extractionResult.method; 
                     adminNotificationDetails = extractionResult.adminDetails || 'تفاصيل غير متوفرة'; 
 
-                    // تحديث بيانات السجل
                     logData.method = extractionResult.method;
                     logData.questionsCount = questions.length;
                     logData.timeMs = Date.now() - startTime;
@@ -325,7 +342,8 @@ module.exports = async (req, res) => {
                             ]
                         };
                         
-                       const successMsg = `✅ تم العثور على ${questions.length} سؤالًا.\n\n` +
+                       const successMsg = `✅ **تم العثور على ${questions.length} سؤالًا.**\n` +
+                                          `📏 عدد الأحرف: ${charCount.toLocaleString()}\n\n` +
                                           `🧠 المعالج: ${extractionMethodReport}\n\n` +
                                           `اختر وجهة الإرسال:`;
                        
@@ -333,33 +351,20 @@ module.exports = async (req, res) => {
 
                         await bot.sendMessage(chatId, successMsg, { parse_mode: 'Markdown', reply_markup: keyboard });
                         adminNotificationStatus = 'نجاح ✅';
+                        adminNotificationDetails += `\n📏 الأحرف: ${charCount.toLocaleString()}`;
                         logData.status = 'success';
 
                     } else {
                         try { await bot.deleteMessage(chatId, waitingMsg.message_id); } catch(e){}
                         
                         logData.status = 'failed';
-
-                        // 🛑 التعامل مع النصوص القصيرة
-                        if (extractionResult.failureReport === "SHORT_TEXT") {
-                            const shortTextMsg = 
-                                `❌ **عذراً، لم أجد نصوصاً كافية في هذا الملف!**\n\n` +
-                                `يبدو أن الملف يحتوي على **صور ممسوحة ضوئياً (Scanned)** أو نصوص غير قابلة للنسخ.\n\n` +
-                                `💡 **الحل:** تأكد أنك تستطيع تحديد ونسخ النص من الملف بنفسك قبل إرساله.`;
-                            
-                            await bot.sendMessage(chatId, shortTextMsg, { parse_mode: 'Markdown' });
-                            
-                            adminNotificationStatus = 'فشل (نص قصير/صور) 🖼️';
-                            logData.errorReason = 'Short Text (<50 chars) - Scanned PDF?';
-                            logData.status = 'rejected_content';
-                        } else {
-                            const failMessage = `❌ لم أتمكن من استخراج أسئلة.\n\n` +
-                                                `📋 التقرير:\n` + 
-                                                `➖ ${extractionMethodReport}`; 
-                            await bot.sendMessage(chatId, failMessage);
-                            adminNotificationStatus = 'فشل (0 أسئلة) ❌';
-                            logData.errorReason = extractionResult.adminDetails || 'No questions found';
-                        }
+                        const failMessage = `❌ لم أتمكن من استخراج أسئلة.\n` +
+                                            `📏 عدد الأحرف: ${charCount.toLocaleString()}\n\n` +
+                                            `📋 التقرير:\n` + 
+                                            `➖ ${extractionMethodReport}`; 
+                        await bot.sendMessage(chatId, failMessage);
+                        adminNotificationStatus = 'فشل (0 أسئلة) ❌';
+                        logData.errorReason = extractionResult.adminDetails || 'No questions found';
                     }
 
                 } catch (error) {
@@ -370,13 +375,20 @@ module.exports = async (req, res) => {
                     logData.status = 'failed';
                     logData.timeMs = Date.now() - startTime;
 
-                    await bot.sendMessage(chatId, '⚠️ حدث خطأ تقني أثناء المعالجة.');
-                    adminNotificationStatus = 'فشل (Error) 💥';
-                    extractionMethodReport = 'Error (خطأ تقني) 💥';
-                    adminNotificationDetails = error.message;
-                    logData.errorReason = error.message;
-                    logData.method = 'error';
-                    
+                    if (error.message === "TIMEOUT_LIMIT_REACHED") {
+                        await bot.sendMessage(chatId, '⚠️ توقف التحليل بسبب تجاوز الوقت المسموح (5 دقائق). الملف قد يكون معقداً جداً.');
+                        adminNotificationStatus = 'فشل (Timeout) ⏳';
+                        extractionMethodReport = 'Timeout (297s) ⏳';
+                        logData.errorReason = 'Timeout (297s)';
+                        logData.method = 'timeout';
+                    } else {
+                        await bot.sendMessage(chatId, '⚠️ حدث خطأ تقني أثناء المعالجة.');
+                        adminNotificationStatus = 'فشل (Error) 💥';
+                        extractionMethodReport = 'Error (خطأ تقني) 💥';
+                        adminNotificationDetails = error.message;
+                        logData.errorReason = error.message;
+                        logData.method = 'error';
+                    }
                 } finally {
                     await logProcessing(logData);
                     global.processingFiles.delete(uniqueRequestId);
@@ -557,27 +569,17 @@ async function extractQuestions(text) {
     let failureReason = '';
 
     // 1️⃣ الذكاء الاصطناعي
-    if (text && text.trim().length > 50) {
-        console.log("Attempting AI extraction...");
-        try {
-            const aiResult = await extractWithAI(text);
-            return { 
-                questions: aiResult.questions, 
-                method: `AI 🤖 (${aiResult.modelDisplay})`,
-                adminDetails: `✅ النجاح باستخدام:\n- النموذج: ${aiResult.modelDisplay}\n- المفتاح: Key #${aiResult.keyIndex}`
-            };
-        } catch (error) {
-            console.error("AI failed completely.");
-            failureReason = error.message.replace("Report: ", "");
-        }
-    } else {
-        // نص قصير
+    console.log("Attempting AI extraction...");
+    try {
+        const aiResult = await extractWithAI(text);
         return { 
-            questions: [], 
-            method: 'مرفوض (صور/قصير)',
-            failureReport: 'SHORT_TEXT',
-            adminDetails: 'تم رفض الملف: نص قصير جداً (<50 حرف). غالباً صور ممسوحة (Scanned PDF).'
+            questions: aiResult.questions, 
+            method: `AI 🤖 (${aiResult.modelDisplay})`,
+            adminDetails: `✅ النجاح باستخدام:\n- النموذج: ${aiResult.modelDisplay}\n- المفتاح: Key #${aiResult.keyIndex}`
         };
+    } catch (error) {
+        console.error("AI failed completely.");
+        failureReason = error.message.replace("Report: ", "");
     }
 
     // 2️⃣ Regex
@@ -766,4 +768,4 @@ function formatQuizText(quizData) {
     }
     if (quizData.explanation) formattedText += `\nExplanation: ${quizData.explanation}`;
     return formattedText;
-                }
+}
