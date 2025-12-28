@@ -1,6 +1,6 @@
 // =========================================================
-// 🎮 Vercel Controller - Version 44.3 (Clean Layout + Spoiler)
-// Features: Spaced Options | Separate Spoiler Answer Line
+// 🎮 Vercel Controller - Version 44.5 (Restored Admin Help + Spoiler)
+// Features: Detailed Admin Help | HTML Escaping | Spoiler Mode
 // =========================================================
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -25,10 +25,10 @@ if (global.isMaintenanceMode === undefined) global.isMaintenanceMode = false;
 // 🛠️ دوال مساعدة (Helpers)
 // =========================================================
 
-// دالة لتنظيف النصوص من الرموز التي تكسر HTML
+// ✅ دالة لتنظيف النصوص من الرموز التي تكسر HTML
 function escapeHtml(text) {
   if (!text) return "";
-  return text
+  return String(text)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -36,7 +36,7 @@ function escapeHtml(text) {
     .replace(/'/g, "&#039;");
 }
 
-// ✨ دالة تنسيق الكويز (تم التعديل: مسافات وسطر منفصل للإجابة)
+// ✨ دالة تنسيق الكويز (مع التنظيف ووضع الإجابة في سبويلر منفصل)
 function formatQuizText(quiz) {
     let text = `<b>${escapeHtml(quiz.question)}</b>\n\n`; // سطر فارغ بعد السؤال
     const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
@@ -47,19 +47,17 @@ function formatQuizText(quiz) {
         text += `<b>${letter})</b> ${escapeHtml(opt)}\n\n`;
     });
 
-    // إضافة سطر الإجابة المنفصل (يظهر فقط إذا كان هناك حل)
+    // إضافة سطر الإجابة المنفصل
     if (quiz.correctOptionId !== null && quiz.correctOptionId >= 0) {
         const correctLetter = optionLetters[quiz.correctOptionId];
         const correctText = quiz.options[quiz.correctOptionId];
-        
-        // 🔥 الإجابة في سطر منفصل ومشوشة بالكامل
+        // الإجابة في سطر منفصل ومشوشة
         text += `<span class="tg-spoiler">✅ <b>الإجابة الصحيحة:</b> ${correctLetter}) ${escapeHtml(correctText)}</span>`;
     }
 
     if (quiz.explanation) {
-        text += `\n\n<span class="tg-spoiler">💡 <b>توضيح:</b> ${quiz.explanation}</span>`;
+        text += `\n\n<span class="tg-spoiler">💡 <b>توضيح:</b> ${escapeHtml(quiz.explanation)}</span>`;
     }
-    
     return text;
 }
 
@@ -197,56 +195,77 @@ module.exports = async (req, res) => {
         const userId = fromUser?.id ? String(fromUser.id) : null;
 
         // ---------------------------------------------------------
-        // 👮‍♂️ أوامر الأدمن
+        // 👮‍♂️ أوامر الأدمن (تم استعادة القائمة الكاملة)
         // ---------------------------------------------------------
         if (userId === ADMIN_CHAT_ID && msg && msg.text) {
             const text = msg.text.trim();
+
+            // 1. دليل الأوامر (المحسن والمفصل)
             if (text === '/adminhelp' || text === '/cmds') {
-                const helpMsg = `🛠️ <b>لوحة التحكم:</b>\n` +
-                                `• <code>/stats</code> الإحصائيات\n` +
-                                `• <code>/user [ID]</code> تقرير مستخدم\n` +
-                                `• <code>/setwelcome</code> تغيير الترحيب\n` +
-                                `• <code>/setalert</code> نشر تنبيه\n` +
-                                `• <code>/repairon</code> | <code>/repairoff</code> الصيانة`;
+                const helpMsg = `🛠️ <b>لوحة التحكم والأوامر الإدارية:</b>\n\n` +
+                                
+                                `📊 <b>الإحصائيات والتقارير:</b>\n` +
+                                `• <code>/stats</code>\n` +
+                                ` لعرض الإحصائيات العامة واليومية.\n\n` +
+                                `• <code>/user + الآيدي</code>\n` +
+                                ` مثال: <code>/user 123456789</code>\n` +
+                                ` لعرض تقرير عن مستخدم معين.\n\n` +
+                                
+                                `⚙️ <b>الإعدادات العامة:</b>\n` +
+                                `• <code>/setwelcome + النص</code>\n` +
+                                ` لتغيير رسالة الترحيب التي تظهر عند البدء.\n\n` +
+                                `• <code>/setalert + النص</code>\n` +
+                                ` لإرسال تنبيه عام يظهر لجميع المستخدمين مرة واحدة.\n\n` +
+                                
+                                `🔧 <b>وضع الصيانة:</b>\n` +
+                                `• <code>/repairon</code> : لتفعيل الصيانة.\n` +
+                                `• <code>/repairoff</code> : لإيقاف الصيانة.`;
+                                
                 await bot.sendMessage(userId, helpMsg, { parse_mode: 'HTML' });
                 return res.status(200).send('Help');
             }
+
             if (text === '/stats') {
                 await bot.sendMessage(userId, '⏳ <b>جاري التحليل...</b>', { parse_mode: 'HTML' });
                 const s = await getGlobalStats();
                 if (s) {
                     const rTotal = s.files.total > 0 ? Math.round((s.files.success / s.files.total) * 100) : 0;
-                    const report = `📊 <b>الإحصائيات:</b>\n\n👥 <b>المستخدمين:</b> ${s.users.total}\n📁 <b>الملفات:</b> ${s.files.total} (${rTotal}%)\n📅 <b>اليوم:</b> ${s.today.total}`;
+                    const rToday = s.today.total > 0 ? Math.round((s.today.success / s.today.total) * 100) : 0;
+                    const report = `📊 <b>الإحصائيات:</b>\n\n👥 <b>المستخدمين:</b>\n• الإجمالي: <code>${s.users.total}</code>\n• النشطين اليوم: <code>${s.users.active}</code>\n\n📁 <b>الملفات:</b>\n• العدد: <code>${s.files.total}</code>\n• نسبة النجاح: <code>${rTotal}%</code>\n\n📅 <b>أداء اليوم (${s.today.total}):</b>\n• نجاح: <code>${s.today.success}</code> (${rToday}%)\n• فشل: <code>${s.today.fail}</code>\n-------------------\n🤖 <b>AI اليوم:</b>\n• Flash 2.5: <code>${s.models.m1}</code>\n• Gemma 3: <code>${s.models.m2}</code>\n• Regex: <code>${s.models.m3}</code>`;
                     await bot.sendMessage(userId, report, { parse_mode: 'HTML' });
                 } else { await bot.sendMessage(userId, '❌ خطأ في الإحصائيات.'); }
                 return res.status(200).send('Stats');
             }
+
             if (text.startsWith('/user ')) {
                 const u = await getUserStats(text.split(' ')[1]);
                 if (u) await bot.sendMessage(userId, `👤 <b>تقرير:</b>\n🆔 <code>${u.user_id}</code>\n📛 ${u.first_name}\n📂 ملفات: ${u.totalRequests}`, {parse_mode: 'HTML'});
                 else await bot.sendMessage(userId, '❌ غير موجود.');
                 return res.status(200).send('User');
             }
+
             if (text.startsWith('/setwelcome ')) {
                 const newMsg = text.replace('/setwelcome ', '').trim();
                 await setBotConfig('welcome_msg', { text: newMsg });
                 await bot.sendMessage(userId, '✅ تم تحديث الترحيب.');
                 return res.status(200).send('Welcome Set');
             }
+
             if (text.startsWith('/setalert ')) {
                 const newAlert = text.replace('/setalert ', '').trim();
                 const alertId = `alert_${Date.now()}`;
                 await setBotConfig('global_alert', { text: newAlert, id: alertId });
-                await bot.sendMessage(userId, `✅ تم نشر التنبيه.`);
+                await bot.sendMessage(userId, `✅ تم نشر التنبيه (ID: ${alertId}).`);
                 return res.status(200).send('Alert Set');
             }
+
             if (text === '/repairon') { global.isMaintenanceMode = true; await bot.sendMessage(ADMIN_CHAT_ID, '🛠️ ON'); return res.status(200).send('ON'); }
             if (text === '/repairoff') { global.isMaintenanceMode = false; await bot.sendMessage(ADMIN_CHAT_ID, '✅ OFF'); return res.status(200).send('OFF'); }
         }
 
         // 🚧 التحقق من الصيانة
         if (global.isMaintenanceMode && userId !== ADMIN_CHAT_ID) {
-             if (msg) await bot.sendMessage(msg.chat.id, '⚠️ <b>البوت في وضع الصيانة.</b>', {parse_mode: 'HTML'}); 
+             if (msg) await bot.sendMessage(msg.chat.id, '⚠️ <b>عذراً، البوت في وضع الصيانة حالياً.</b>\nسنعود للعمل قريباً.', {parse_mode: 'HTML'}); 
              else if (cb) await bot.answerCallbackQuery(cb.id, { text: '⚠️ الصيانة مفعلة.', show_alert: true });
              return res.status(200).send('Maintenance');
         }
@@ -390,9 +409,9 @@ module.exports = async (req, res) => {
                 const uniqueKey = parts[3]; 
                 const targetRaw = parts[4]; 
                 
-                // ✅ التعديل هنا: التعرف على الأوضاع المختلفة
+                // ✅ التعرف على وضع النص المشوش (Spoiler)
                 const closePolls = targetRaw.includes('close'); 
-                const spoilerMode = targetRaw.includes('spoiler'); // جديد
+                const spoilerMode = targetRaw.includes('spoiler'); 
 
                 if (targetRaw.includes('here')) {
                     let modeText = "";
@@ -404,7 +423,7 @@ module.exports = async (req, res) => {
                     
                     await logUsage(userId, null, 'Quiz', count, model, 'success', 'quiz_send');
                     
-                    // إرسال البيانات إلى GAS مع المتغير الجديد spoilerMode
+                    // تمرير spoilerMode إلى GAS
                     await sendToGasAndForget({
                         action: 'execute_send', 
                         userId: userId, 
@@ -412,7 +431,7 @@ module.exports = async (req, res) => {
                         chatType: 'private', 
                         sessionKey: uniqueKey, 
                         closePolls: closePolls,
-                        spoilerMode: spoilerMode // ✅ تمرير المتغير
+                        spoilerMode: spoilerMode 
                     });
                 } 
             }
