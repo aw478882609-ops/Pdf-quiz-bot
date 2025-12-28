@@ -1,6 +1,6 @@
 // =========================================================
-// 🎮 Vercel Controller - Version 38.0 (Stats & Schema Update)
-// Features: Admin Stats | User Lookup | New DB Schema Support
+// 🎮 Vercel Controller - Version 39.0 (Debug Stats)
+// Features: Fix Supabase Count | Error Logging to Vercel
 // =========================================================
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -25,12 +25,11 @@ if (global.isMaintenanceMode === undefined) global.isMaintenanceMode = false;
 // 🗄️ دوال قاعدة البيانات (Supabase)
 // =========================================================
 
-// ✅ تسجيل أو تحديث بيانات المستخدم
 async function upsertUser(user) {
     if (!SUPABASE_URL || !SUPABASE_KEY) return;
     try {
         await axios.post(`${SUPABASE_URL}/rest/v1/users`, {
-            user_id: user.id, // تم تحديث الاسم ليطابق السكيما الجديدة
+            user_id: user.id,
             first_name: user.first_name,
             username: user.username || null,
             last_active: new Date().toISOString()
@@ -42,10 +41,12 @@ async function upsertUser(user) {
                 'Prefer': 'resolution=merge-duplicates' 
             }
         });
-    } catch (e) { console.error("Supabase User Error:", e.message); }
+    } catch (e) { 
+        // تسجيل الخطأ في Vercel Logs
+        console.error("❌ Supabase Upsert Error:", e.response?.data || e.message); 
+    }
 }
 
-// ✅ تسجيل العمليات في الجدول الجديد public.processing_logs
 async function logUsage(userId, fileId, fileName, count, model, status, method, errorReason = null) {
     if (!SUPABASE_URL || !SUPABASE_KEY) return;
     try {
@@ -54,7 +55,7 @@ async function logUsage(userId, fileId, fileName, count, model, status, method, 
             file_id: fileId || null,
             file_name: fileName || 'unknown',
             status: status,
-            method: method || 'vision', // vision or text
+            method: method || 'vision',
             model_used: model || 'gemini-2.5-flash',
             questions_count: parseInt(count) || 0,
             error_reason: errorReason,
@@ -66,55 +67,76 @@ async function logUsage(userId, fileId, fileName, count, model, status, method, 
                 'Content-Type': 'application/json' 
             }
         });
-    } catch (e) { console.error("Supabase Log Error:", e.message); }
+    } catch (e) { 
+        console.error("❌ Supabase Log Usage Error:", e.response?.data || e.message); 
+    }
 }
 
-// ✅ جلب إحصائيات عامة (للأدمن)
+// ✅ [تعديل] دالة جلب الإحصائيات العامة مع اللوجات الصحيحة
 async function getGlobalStats() {
     try {
-        const headers = { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` };
+        // 🔥 إضافة 'Prefer': 'count=exact' ضروري لجلب العدد
+        const headers = { 
+            'apikey': SUPABASE_KEY, 
+            'Authorization': `Bearer ${SUPABASE_KEY}`,
+            'Prefer': 'count=exact' 
+        };
         
+        console.log("📊 Fetching Global Stats..."); // يظهر في Logs
+
         // 1. عدد المستخدمين الكلي
-        const usersRes = await axios.head(`${SUPABASE_URL}/rest/v1/users`, { headers, params: { select: 'count' } });
-        const totalUsers = usersRes.headers['content-range'] ? usersRes.headers['content-range'].split('/')[1] : 0;
+        const usersRes = await axios.head(`${SUPABASE_URL}/rest/v1/users`, { headers });
+        const totalUsers = usersRes.headers['content-range'] ? usersRes.headers['content-range'].split('/')[1] : '0';
 
         // 2. عدد الملفات الناجحة
-        const logsSuccess = await axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?status=eq.success`, { headers, params: { select: 'count' } });
-        const totalSuccess = logsSuccess.headers['content-range'] ? logsSuccess.headers['content-range'].split('/')[1] : 0;
+        const logsSuccess = await axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?status=eq.success`, { headers });
+        const totalSuccess = logsSuccess.headers['content-range'] ? logsSuccess.headers['content-range'].split('/')[1] : '0';
 
         // 3. عدد الملفات الفاشلة
-        const logsFail = await axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?status=neq.success`, { headers, params: { select: 'count' } });
-        const totalFail = logsFail.headers['content-range'] ? logsFail.headers['content-range'].split('/')[1] : 0;
+        const logsFail = await axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?status=neq.success`, { headers });
+        const totalFail = logsFail.headers['content-range'] ? logsFail.headers['content-range'].split('/')[1] : '0';
+
+        console.log(`Stats Result: Users=${totalUsers}, Success=${totalSuccess}, Fail=${totalFail}`);
 
         return { totalUsers, totalSuccess, totalFail };
-    } catch (e) { return null; }
+    } catch (e) { 
+        // 🔥 تسجيل تفاصيل الخطأ كاملة لمعرفة السبب
+        console.error("❌ Stats Error:", e.response?.status, e.response?.statusText, e.response?.data || e.message);
+        return null; 
+    }
 }
 
-// ✅ جلب إحصائيات مستخدم محدد (للأدمن)
+// ✅ [تعديل] دالة جلب إحصائيات مستخدم محدد
 async function getUserStats(targetId) {
     try {
-        const headers = { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` };
+        const headers = { 
+            'apikey': SUPABASE_KEY, 
+            'Authorization': `Bearer ${SUPABASE_KEY}`
+        };
+        const countHeaders = { ...headers, 'Prefer': 'count=exact' };
 
         // بيانات المستخدم
         const userRes = await axios.get(`${SUPABASE_URL}/rest/v1/users?user_id=eq.${targetId}`, { headers });
         if (!userRes.data || userRes.data.length === 0) return null;
         const user = userRes.data[0];
 
-        // عدد محاولاته
-        const logsRes = await axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?user_id=eq.${targetId}`, { headers, params: { select: 'count' } });
-        const totalRequests = logsRes.headers['content-range'] ? logsRes.headers['content-range'].split('/')[1] : 0;
+        // عدد محاولاته (HEAD request)
+        const logsRes = await axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?user_id=eq.${targetId}`, { headers: countHeaders });
+        const totalRequests = logsRes.headers['content-range'] ? logsRes.headers['content-range'].split('/')[1] : '0';
 
         return { ...user, totalRequests };
-    } catch (e) { return null; }
+    } catch (e) { 
+        console.error("❌ User Stats Error:", e.response?.data || e.message);
+        return null; 
+    }
 }
 
-// ✅ دالة الإرسال لـ GAS
 async function sendToGasAndForget(payload) {
     try {
         await axios.post(GAS_WEB_APP_URL, payload, { timeout: 1500 });
     } catch (error) {
         if (error.code !== 'ECONNABORTED' && !error.message.includes('timeout')) {
-            console.error("GAS Connection Error:", error.message);
+            console.error("⚠️ GAS Connection Error:", error.message);
         }
     }
 }
@@ -133,15 +155,16 @@ module.exports = async (req, res) => {
         const userId = fromUser?.id ? String(fromUser.id) : null;
 
         // ---------------------------------------------------------
-        // 👮‍♂️ أوامر الأدمن (Statistics)
+        // 👮‍♂️ أوامر الأدمن
         // ---------------------------------------------------------
         if (userId === ADMIN_CHAT_ID && msg && msg.text) {
             const text = msg.text.trim();
 
-            // 1. الإحصائيات العامة (/stats)
             if (text === '/stats') {
                 await bot.sendMessage(userId, '⏳ <b>جاري جلب البيانات...</b>', { parse_mode: 'HTML' });
+                
                 const stats = await getGlobalStats();
+                
                 if (stats) {
                     const report = `📊 <b>الإحصائيات العامة للبوت:</b>\n\n` +
                                    `👥 <b>عدد المستخدمين:</b> <code>${stats.totalUsers}</code>\n` +
@@ -150,12 +173,12 @@ module.exports = async (req, res) => {
                                    `📅 <b>التاريخ:</b> ${new Date().toLocaleDateString('ar-EG')}`;
                     await bot.sendMessage(userId, report, { parse_mode: 'HTML' });
                 } else {
-                    await bot.sendMessage(userId, '❌ حدث خطأ أثناء جلب الإحصائيات.');
+                    // في حالة الفشل، رسالة توضح أن الخطأ تم تسجيله
+                    await bot.sendMessage(userId, '❌ حدث خطأ أثناء جلب الإحصائيات.\nراجع Vercel Logs لمعرفة السبب.');
                 }
                 return res.status(200).send('Stats Sent');
             }
 
-            // 2. إحصائيات مستخدم محدد (/user 123456)
             if (text.startsWith('/user ')) {
                 const targetId = text.split(' ')[1];
                 if (!targetId) return await bot.sendMessage(userId, '⚠️ يجب كتابة الآيدي. مثال:\n/user 123456789');
@@ -174,12 +197,11 @@ module.exports = async (req, res) => {
                                    `📂 <b>عدد الملفات المرسلة:</b> ${uStats.totalRequests}`;
                     await bot.sendMessage(userId, report, { parse_mode: 'HTML' });
                 } else {
-                    await bot.sendMessage(userId, '❌ لم يتم العثور على هذا المستخدم في قاعدة البيانات.');
+                    await bot.sendMessage(userId, '❌ لم يتم العثور على بيانات (أو حدث خطأ، راجع اللوجات).');
                 }
                 return res.status(200).send('User Stats Sent');
             }
             
-            // أوامر الصيانة (كما هي)
             if (text === '/repairon') { global.isMaintenanceMode = true; await bot.sendMessage(ADMIN_CHAT_ID, '🛠️ ON'); return res.status(200).send('ON'); }
             if (text === '/repairoff') { global.isMaintenanceMode = false; await bot.sendMessage(ADMIN_CHAT_ID, '✅ OFF'); return res.status(200).send('OFF'); }
         }
@@ -192,12 +214,12 @@ module.exports = async (req, res) => {
         }
 
         // =========================================================
-        // 1️⃣ استلام الملف (PDF - URL Based)
+        // 1️⃣ استلام الملف
         // =========================================================
         if (msg && msg.document) {
             const chatId = msg.chat.id;
             const fileId = msg.document.file_id;
-            const fileName = msg.document.file_name; // اسم الملف للتسجيل
+            const fileName = msg.document.file_name;
             const userName = `${fromUser.first_name} ${fromUser.last_name || ''}`.trim();
             
             if (msg.document.mime_type !== 'application/pdf') {
@@ -205,16 +227,13 @@ module.exports = async (req, res) => {
                 return res.status(200).send('OK');
             }
 
-            // A. تسجيل المستخدم
             await upsertUser(fromUser);
-
-            // B. تسجيل بدء العملية في الجدول الجديد
+            // تسجيل مبدئي للعملية
             await logUsage(userId, fileId, fileName, 0, null, 'processing', 'url_handover');
 
             const waitMsg = await bot.sendMessage(chatId, '⏳ <b>جاري تحويل الملف للمعالجة...</b>', {parse_mode: 'HTML'});
 
             try {
-                // إرسال الرابط لـ GAS ليقوم بالتحميل
                 const fileLink = await bot.getFileLink(fileId);
 
                 await bot.editMessageText('🤖 <b>يتم الآن التحميل والتحليل بواسطة Google...</b>\n\n🚀 هذه الطريقة أسرع للملفات الكبيرة.', { 
@@ -231,18 +250,18 @@ module.exports = async (req, res) => {
                     userName: userName,
                     userUsername: fromUser.username,
                     fileId: fileId,
-                    fileName: fileName // إرسال اسم الملف أيضاً
+                    fileName: fileName
                 });
 
             } catch (err) {
-                console.error("PDF Link Error:", err);
+                console.error("❌ PDF Handover Error:", err.message); // Log
                 await logUsage(userId, fileId, fileName, 0, null, 'failed', 'url_handover', err.message);
                 await bot.sendMessage(chatId, '❌ حدث خطأ أثناء تجهيز الملف.');
             }
         }
 
         // =========================================================
-        // 2️⃣ التعامل مع الأزرار (Callback Queries)
+        // 2️⃣ الأزرار
         // =========================================================
         else if (cb) {
             const chatId = cb.message.chat.id;
@@ -261,8 +280,7 @@ module.exports = async (req, res) => {
                     await bot.answerCallbackQuery(cb.id, { text: `🚀 جاري البدء${modeText}...` });
                     await bot.sendMessage(chatId, `⚡ <b>جاري إرسال ${count} سؤال...</b>`, {parse_mode: 'HTML'});
                     
-                    // تحديث السجل بأن العملية تمت (Executed)
-                    // ملاحظة: هنا نرسل fileName كـ null لأنه غير متوفر في الـ callback، ويمكن تحسينه لاحقاً
+                    // تحديث الحالة لـ success في السجل
                     await logUsage(userId, null, 'Quiz Execution', count, model, 'success', 'quiz_send');
 
                     await sendToGasAndForget({
@@ -277,6 +295,9 @@ module.exports = async (req, res) => {
             }
         }
 
-    } catch (e) { console.error("General Error:", e); }
+    } catch (e) { 
+        // تسجيل الأخطاء العامة في Vercel
+        console.error("💥 General Vercel Error:", e.message); 
+    }
     res.status(200).send('OK');
 };
