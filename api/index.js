@@ -25,15 +25,26 @@ if (global.isMaintenanceMode === undefined) global.isMaintenanceMode = false;
 // 🛠️ دوال مساعدة (Helpers)
 // =========================================================
 
+// دالة لتنظيف النصوص من الرموز التي تكسر HTML
+function escapeHtml(text) {
+  if (!text) return "";
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 // ✨ دالة تنسيق الكويز (تم التعديل: مسافات وسطر منفصل للإجابة)
 function formatQuizText(quiz) {
-    let text = `<b>${quiz.question}</b>\n\n`; // سطر فارغ بعد السؤال
+    let text = `<b>${escapeHtml(quiz.question)}</b>\n\n`; // سطر فارغ بعد السؤال
     const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
     
-    // عرض الاختيارات مع سطر فارغ بين كل اختيار
+    // عرض الاختيارات
     quiz.options.forEach((opt, index) => {
         const letter = optionLetters[index] || (index + 1);
-        text += `<b>${letter})</b> ${opt}\n\n`; // \n\n تضمن وجود سطر فارغ
+        text += `<b>${letter})</b> ${escapeHtml(opt)}\n\n`;
     });
 
     // إضافة سطر الإجابة المنفصل (يظهر فقط إذا كان هناك حل)
@@ -42,7 +53,7 @@ function formatQuizText(quiz) {
         const correctText = quiz.options[quiz.correctOptionId];
         
         // 🔥 الإجابة في سطر منفصل ومشوشة بالكامل
-        text += `<span class="tg-spoiler">✅ <b>الإجابة الصحيحة:</b> ${correctLetter}) ${correctText}</span>`;
+        text += `<span class="tg-spoiler">✅ <b>الإجابة الصحيحة:</b> ${correctLetter}) ${escapeHtml(correctText)}</span>`;
     }
 
     if (quiz.explanation) {
