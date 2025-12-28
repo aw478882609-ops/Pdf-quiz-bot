@@ -1,6 +1,6 @@
 // =========================================================
-// 🎮 Vercel Controller - Version 42.0 (Smart Alerts & Help)
-// Features: One-Time Global Alerts | Admin Help | Full Log
+// 🎮 Vercel Controller - Version 44.0 (Better Help Message)
+// Features: Enhanced Admin Help | Maintenance | Updates
 // =========================================================
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -25,20 +25,13 @@ if (global.isMaintenanceMode === undefined) global.isMaintenanceMode = false;
 // 🗄️ دوال قاعدة البيانات (Supabase)
 // =========================================================
 
-// حفظ الإعدادات (مع ID فريد للتنبيه لتمييز الإصدارات)
 async function setBotConfig(key, value) {
     if (!SUPABASE_URL || !SUPABASE_KEY) return;
     try {
         await axios.post(`${SUPABASE_URL}/rest/v1/bot_config`, {
-            key: key,
-            value: value 
+            key: key, value: value 
         }, {
-            headers: { 
-                'apikey': SUPABASE_KEY, 
-                'Authorization': `Bearer ${SUPABASE_KEY}`, 
-                'Content-Type': 'application/json', 
-                'Prefer': 'resolution=merge-duplicates' 
-            }
+            headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates' }
         });
     } catch (e) { console.error("❌ Config Set Error:", e.message); }
 }
@@ -53,7 +46,6 @@ async function getBotConfig(key) {
     } catch (e) { return null; }
 }
 
-// ✅ [تحديث] تسجيل المستخدم + تحديث حالة قراءة التنبيه
 async function upsertUser(user, alertIdSeen = null) {
     if (!SUPABASE_URL || !SUPABASE_KEY) return;
     try {
@@ -63,24 +55,14 @@ async function upsertUser(user, alertIdSeen = null) {
             username: user.username || null,
             last_active: new Date().toISOString()
         };
-        
-        // إذا تم تمرير ID لتنبيه تمت مشاهدته، نحدثه في القاعدة
-        if (alertIdSeen) {
-            payload.seen_alert_id = alertIdSeen;
-        }
+        if (alertIdSeen) payload.seen_alert_id = alertIdSeen;
 
         await axios.post(`${SUPABASE_URL}/rest/v1/users`, payload, {
-            headers: { 
-                'apikey': SUPABASE_KEY, 
-                'Authorization': `Bearer ${SUPABASE_KEY}`, 
-                'Content-Type': 'application/json', 
-                'Prefer': 'resolution=merge-duplicates' 
-            }
+            headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates' }
         });
-    } catch (e) { console.error("❌ Supabase Upsert Error:", e.response?.data || e.message); }
+    } catch (e) { console.error("❌ Upsert Error:", e.message); }
 }
 
-// جلب بيانات مستخدم محدد للتحقق من التنبيه
 async function getUserData(userId) {
     if (!SUPABASE_URL || !SUPABASE_KEY) return null;
     try {
@@ -110,30 +92,20 @@ async function logUsage(userId, fileId, fileName, count, model, status, method, 
     } catch (e) { console.error("❌ Log Error:", e.message); }
 }
 
-// دالة فحص التنبيه الذكية
 async function checkAndSendAlert(chatId, user) {
     const alertCfg = await getBotConfig('global_alert');
-    if (!alertCfg || !alertCfg.text || !alertCfg.id) return; // لا يوجد تنبيه نشط
-
-    // جلب بيانات المستخدم من القاعدة لمعرفة آخر تنبيه شاهده
+    if (!alertCfg || !alertCfg.text || !alertCfg.id) return; 
     const dbUser = await getUserData(user.id);
-    
-    // إذا كان المستخدم جديداً تماماً أو لم يرَ هذا التنبيه من قبل
     if (!dbUser || dbUser.seen_alert_id !== alertCfg.id) {
-        // إرسال التنبيه
-        await bot.sendMessage(chatId, `🔔 <b>تنويه هام من الإدارة:</b>\n\n${alertCfg.text}`, { parse_mode: 'HTML' });
-        
-        // تحديث السجل بأن المستخدم رأى هذا التنبيه
-        // ملاحظة: نمرر alertCfg.id ليتم حفظه في seen_alert_id
+        await bot.sendMessage(chatId, `🔔 <b>تنويه هام:</b>\n\n${alertCfg.text}`, { parse_mode: 'HTML' });
         await upsertUser(user, alertCfg.id);
     } else {
-        // المستخدم رأى التنبيه مسبقاً، نحدث نشاطه فقط بدون تغيير التنبيه
         await upsertUser(user); 
     }
 }
 
-// دوال الإحصائيات (كما هي)
-async function getGlobalStats() { /* ...نفس الكود السابق... */ 
+// دوال الإحصائيات
+async function getGlobalStats() {
     try {
         const headers = { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Prefer': 'count=exact' };
         const today = new Date(); today.setHours(0, 0, 0, 0); const todayISO = today.toISOString();
@@ -146,7 +118,7 @@ async function getGlobalStats() { /* ...نفس الكود السابق... */
             axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?created_at=gte.${todayISO}&status=eq.success`, { headers }),
             axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?created_at=gte.${todayISO}&status=neq.success`, { headers }),
             axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?created_at=gte.${todayISO}&model_used=eq.gemini-2.5-flash`, { headers }),
-            axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?created_at=gte.${todayISO}&model_used=eq.gemma-3`, { headers }),
+            axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?created_at=gte.${todayISO}&model_used=eq.gemma-3-27b-it`, { headers }),
             axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?created_at=gte.${todayISO}&method=eq.regex_fallback`, { headers })
         ]);
         const c = (r) => parseInt(r.headers['content-range']?.split('/')[1] || '0');
@@ -154,7 +126,7 @@ async function getGlobalStats() { /* ...نفس الكود السابق... */
     } catch (e) { return null; }
 }
 
-async function getUserStats(targetId) { /* ...نفس الكود السابق... */ 
+async function getUserStats(targetId) {
     try {
         const headers = { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` };
         const countHeaders = { ...headers, 'Prefer': 'count=exact' };
@@ -189,38 +161,43 @@ module.exports = async (req, res) => {
         if (userId === ADMIN_CHAT_ID && msg && msg.text) {
             const text = msg.text.trim();
 
-            // 1. دليل الأوامر (الجديد)
+            // 1. دليل الأوامر (المحسن)
             if (text === '/adminhelp' || text === '/cmds') {
-                const helpMsg = `🛠️ <b>لوحة تحكم الأدمن:</b>\n\n` +
-                                `📊 <b>الإحصائيات:</b>\n` +
-                                `• <code>/stats</code> : عرض الإحصائيات العامة واليومية.\n` +
-                                `• <code>/user [id]</code> : عرض تقرير عن مستخدم معين.\n\n` +
+                const helpMsg = `🛠️ <b>لوحة التحكم والأوامر الإدارية:</b>\n\n` +
                                 
-                                `⚙️ <b>الإعدادات:</b>\n` +
-                                `• <code>/setwelcome [نص]</code> : تغيير رسالة الترحيب.\n` +
-                                `• <code>/setalert [نص]</code> : نشر تنبيه عام يظهر لجميع المستخدمين (مرة واحدة).\n\n` +
+                                `📊 <b>الإحصائيات والتقارير:</b>\n` +
+                                `• <code>/stats</code>\n` +
+                                ` لعرض الإحصائيات العامة واليومية.\n\n` +
+                                `• <code>/user + الآيدي</code>\n` +
+                                ` مثال: <code>/user 123456789</code>\n` +
+                                ` لعرض تقرير عن مستخدم معين.\n\n` +
                                 
-                                `🔧 <b>الصيانة:</b>\n` +
-                                `• <code>/repairon</code> : تفعيل وضع الصيانة.\n` +
-                                `• <code>/repairoff</code> : إيقاف وضع الصيانة.`;
+                                `⚙️ <b>الإعدادات العامة:</b>\n` +
+                                `• <code>/setwelcome + النص</code>\n` +
+                                ` لتغيير رسالة الترحيب التي تظهر عند البدء.\n\n` +
+                                `• <code>/setalert + النص</code>\n` +
+                                ` لإرسال تنبيه عام يظهر لجميع المستخدمين مرة واحدة.\n\n` +
+                                
+                                `🔧 <b>وضع الصيانة:</b>\n` +
+                                `• <code>/repairon</code> : لتفعيل الصيانة.\n` +
+                                `• <code>/repairoff</code> : لإيقاف الصيانة.`;
+                                
                 await bot.sendMessage(userId, helpMsg, { parse_mode: 'HTML' });
-                return res.status(200).send('Help Sent');
+                return res.status(200).send('Help');
             }
 
-            // 2. الإحصائيات
             if (text === '/stats') {
-                await bot.sendMessage(userId, '⏳ <b>جاري تحليل البيانات...</b>', { parse_mode: 'HTML' });
+                await bot.sendMessage(userId, '⏳ <b>جاري التحليل...</b>', { parse_mode: 'HTML' });
                 const s = await getGlobalStats();
                 if (s) {
                     const rTotal = s.files.total > 0 ? Math.round((s.files.success / s.files.total) * 100) : 0;
                     const rToday = s.today.total > 0 ? Math.round((s.today.success / s.today.total) * 100) : 0;
-                    const report = `📊 <b>الإحصائيات العامة للبوت:</b>\n\n👥 <b>المستخدمين:</b>\n• الإجمالي: <code>${s.users.total}</code>\n• النشطين اليوم: <code>${s.users.active}</code>\n\n📁 <b>الملفات:</b>\n• العدد: <code>${s.files.total}</code>\n• نسبة النجاح: <code>${rTotal}%</code>\n\n📅 <b>أداء اليوم (${s.today.total}):</b>\n• نجاح: <code>${s.today.success}</code> (${rToday}%)\n• فشل: <code>${s.today.fail}</code>\n-------------------\n🤖 <b>AI اليوم:</b>\n• ⚡ Flash: <code>${s.models.m1}</code>\n• 🛡️ Gemma: <code>${s.models.m2}</code>\n• 🧩 Regex: <code>${s.models.m3}</code>`;
+                    const report = `📊 <b>الإحصائيات:</b>\n\n👥 <b>المستخدمين:</b>\n• الإجمالي: <code>${s.users.total}</code>\n• النشطين اليوم: <code>${s.users.active}</code>\n\n📁 <b>الملفات:</b>\n• العدد: <code>${s.files.total}</code>\n• نسبة النجاح: <code>${rTotal}%</code>\n\n📅 <b>أداء اليوم (${s.today.total}):</b>\n• نجاح: <code>${s.today.success}</code> (${rToday}%)\n• فشل: <code>${s.today.fail}</code>\n-------------------\n🤖 <b>AI اليوم:</b>\n• Flash 2.5: <code>${s.models.m1}</code>\n• Gemma 3: <code>${s.models.m2}</code>\n• Regex: <code>${s.models.m3}</code>`;
                     await bot.sendMessage(userId, report, { parse_mode: 'HTML' });
                 } else { await bot.sendMessage(userId, '❌ خطأ في الإحصائيات.'); }
                 return res.status(200).send('Stats');
             }
 
-            // 3. تقرير مستخدم
             if (text.startsWith('/user ')) {
                 const u = await getUserStats(text.split(' ')[1]);
                 if (u) await bot.sendMessage(userId, `👤 <b>تقرير:</b>\n🆔 <code>${u.user_id}</code>\n📛 ${u.first_name}\n📂 ملفات: ${u.totalRequests}`, {parse_mode: 'HTML'});
@@ -228,22 +205,18 @@ module.exports = async (req, res) => {
                 return res.status(200).send('User');
             }
 
-            // 4. تعيين رسالة الترحيب
             if (text.startsWith('/setwelcome ')) {
                 const newMsg = text.replace('/setwelcome ', '').trim();
                 await setBotConfig('welcome_msg', { text: newMsg });
-                await bot.sendMessage(userId, '✅ <b>تم تحديث الترحيب.</b>', {parse_mode: 'HTML'});
+                await bot.sendMessage(userId, '✅ تم تحديث الترحيب.');
                 return res.status(200).send('Welcome Set');
             }
 
-            // 5. ✅ [تعديل] تعيين التنبيه العام
             if (text.startsWith('/setalert ')) {
                 const newAlert = text.replace('/setalert ', '').trim();
-                // نولد ID جديد يعتمد على الوقت الحالي ليكون فريداً
                 const alertId = `alert_${Date.now()}`;
-                
                 await setBotConfig('global_alert', { text: newAlert, id: alertId });
-                await bot.sendMessage(userId, `✅ <b>تم نشر التنبيه بنجاح.</b>\nسيظهر لكل مستخدم مرة واحدة عند استخدامه للبوت.\n🆔 مرجع التنبيه: <code>${alertId}</code>`, {parse_mode: 'HTML'});
+                await bot.sendMessage(userId, `✅ تم نشر التنبيه (ID: ${alertId}).`);
                 return res.status(200).send('Alert Set');
             }
 
@@ -253,25 +226,21 @@ module.exports = async (req, res) => {
 
         // 🚧 التحقق من الصيانة
         if (global.isMaintenanceMode && userId !== ADMIN_CHAT_ID) {
-             if (msg) await bot.sendMessage(msg.chat.id, '⚠️ البوت في وضع الصيانة.'); else if (cb) await bot.answerCallbackQuery(cb.id, { text: '⚠️ الصيانة مفعلة.', show_alert: true });
+             if (msg) await bot.sendMessage(msg.chat.id, '⚠️ <b>عذراً، البوت في وضع الصيانة حالياً.</b>\nسنعود للعمل قريباً.', {parse_mode: 'HTML'}); 
+             else if (cb) await bot.answerCallbackQuery(cb.id, { text: '⚠️ الصيانة مفعلة.', show_alert: true });
              return res.status(200).send('Maintenance');
         }
 
         // =========================================================
-        // 0️⃣ أمر /start + التنبيه الذكي
+        // 0️⃣ أمر /start
         // =========================================================
         if (msg && msg.text && msg.text.startsWith('/start')) {
             const chatId = msg.chat.id;
-
-            // 1. إرسال الترحيب
             const welcomeCfg = await getBotConfig('welcome_msg');
             const welcomeText = welcomeCfg?.text || `مرحباً بك ${fromUser.first_name}! 👋\n\n📚 <b>أرسل لي ملف PDF وسأقوم بتحليله.</b>`;
             await bot.sendMessage(chatId, welcomeText, { parse_mode: 'HTML' });
-
-            // 2. التحقق وإرسال التنبيه (إذا وجد ولم يره المستخدم)
             await checkAndSendAlert(chatId, fromUser);
-
-            return res.status(200).send('Start Handled');
+            return res.status(200).send('Start');
         }
 
         // =========================================================
@@ -287,15 +256,23 @@ module.exports = async (req, res) => {
                 await bot.sendMessage(chatId, '❌ <b>ملفات PDF فقط.</b>', {parse_mode: 'HTML'}); return res.status(200).send('OK');
             }
 
-            // تحقق من التنبيه قبل المعالجة أيضاً (لضمان وصوله حتى لو لم يضغط start)
             await checkAndSendAlert(chatId, fromUser);
-
             await logUsage(userId, fileId, fileName, 0, null, 'processing', 'url_handover');
-            const waitMsg = await bot.sendMessage(chatId, '⏳ <b>جاري التحضير...</b>', {parse_mode: 'HTML'});
+
+            const waitMsg = await bot.sendMessage(chatId, '⏳ <b>جاري تحضير الملف...</b>', {parse_mode: 'HTML'});
 
             try {
                 const fileLink = await bot.getFileLink(fileId);
-                await bot.editMessageText('🤖 <b>يتم النقل للتحليل...</b>', { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'HTML' });
+                
+                const processingMsg = `🤖 <b>يتم تحليل الملف واستخراج الأسئلة بالذكاء الاصطناعي...</b>\n\n` +
+                                      `⏳ الرجاء الانتظار، قد تستغرق العملية وقتاً حسب حجم الملف.\n` +
+                                      `⚠️ <b>تنبيه:</b> إذا استمرت معالجة الملف أكثر من 6 دقائق، فسيتم إيقاف المعالجة إجبارياً ويجب تقسيم الملف المرسل.`;
+
+                await bot.editMessageText(processingMsg, { 
+                    chat_id: chatId, 
+                    message_id: waitMsg.message_id, 
+                    parse_mode: 'HTML' 
+                });
                 
                 await sendToGasAndForget({
                     action: 'analyze_async', fileUrl: fileLink, chatId: chatId, messageId: waitMsg.message_id,
