@@ -1,6 +1,6 @@
 // =========================================================
-// 🎮 Vercel Controller - Version 25.0 (Final Integration)
-// Features: Unique Session Key | Full User Info | Supabase | Async Trigger
+// 🎮 Vercel Controller - Version 30.0 (Updated for Instant Solve)
+// Features: Send & Solve Support | Full User Info | Supabase | Async Trigger
 // =========================================================
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -187,17 +187,24 @@ module.exports = async (req, res) => {
             const data = cb.data; 
 
             // تحليل البيانات من الزر (تم إنشاؤه بواسطة GAS)
-            // الصيغة: cmd_send | count | model | uniqueKey | target
+            // الصيغة المتوقعة: cmd_send | count | model | uniqueKey | target
+            // target قد يكون: 'here', 'here_close', 'chan', 'chan_close'
             
             if (data.startsWith('cmd_send')) {
                 const parts = data.split('|');
                 const count = parts[1];
                 const model = parts[2];
                 const uniqueKey = parts[3]; // 🔥 المفتاح الفريد
-                const target = parts[4];
+                const targetRaw = parts[4]; // الهدف الخام
+
+                // ✅ استخراج منطق الإغلاق (Send & Solve)
+                const closePolls = targetRaw.includes('close'); 
+                const target = targetRaw.replace('_close', ''); // توحيد الهدف ليصبح 'here' أو 'chan'
 
                 if (target === 'here') {
-                    await bot.answerCallbackQuery(cb.id, { text: '🚀 جاري البدء...' });
+                    // رسالة تفاعلية بسيطة
+                    const modeText = closePolls ? " (وحلها)" : "";
+                    await bot.answerCallbackQuery(cb.id, { text: `🚀 جاري البدء${modeText}...` });
                     await bot.sendMessage(chatId, `⚡ <b>جاري إرسال ${count} سؤال...</b>`, {parse_mode: 'HTML'});
 
                     // تسجيل الاستهلاك
@@ -209,7 +216,8 @@ module.exports = async (req, res) => {
                         userId: userId,
                         targetChatId: chatId,
                         chatType: 'private',
-                        sessionKey: uniqueKey // 👈 تمرير المفتاح
+                        sessionKey: uniqueKey, // 👈 تمرير المفتاح
+                        closePolls: closePolls // 👈 تمرير خيار الإغلاق الفوري
                     });
                 } 
                 else if (target === 'chan') {
@@ -217,7 +225,8 @@ module.exports = async (req, res) => {
                     global.userState[userId] = { 
                         step: 'awaiting_channel', 
                         count, model, 
-                        sessionKey: uniqueKey 
+                        sessionKey: uniqueKey,
+                        closePolls: closePolls // 👈 حفظ خيار الإغلاق
                     };
                     await bot.answerCallbackQuery(cb.id);
                     await bot.sendMessage(chatId, '📝 <b>أرسل معرف القناة أو المجموعة الآن:</b>\nمثال: @ChannelName', {parse_mode: 'HTML'});
@@ -231,7 +240,9 @@ module.exports = async (req, res) => {
         else if (msg && msg.text && global.userState[userId]?.step === 'awaiting_channel') {
              const chatId = msg.chat.id;
              const text = msg.text.trim();
-             const { count, model, sessionKey } = global.userState[userId];
+             
+             // استرجاع البيانات المحفوظة بما فيها closePolls
+             const { count, model, sessionKey, closePolls } = global.userState[userId];
 
              // التحقق البسيط
              if (!text.startsWith('@') && !text.startsWith('-100')) {
@@ -239,7 +250,8 @@ module.exports = async (req, res) => {
                 return res.status(200).send('OK');
              }
 
-             await bot.sendMessage(chatId, `🚀 <b>جاري التوجيه للقناة (${text})...</b>`, {parse_mode: 'HTML'});
+             const modeText = closePolls ? " (وضع الحل الفوري)" : "";
+             await bot.sendMessage(chatId, `🚀 <b>جاري التوجيه للقناة (${text})${modeText}...</b>`, {parse_mode: 'HTML'});
              
              // تسجيل الاستهلاك
              await logUsage(userId, count, model, 'executed_channel');
@@ -250,9 +262,11 @@ module.exports = async (req, res) => {
                 userId: userId,
                 targetChatId: text,
                 chatType: 'channel',
-                sessionKey: sessionKey
+                sessionKey: sessionKey,
+                closePolls: closePolls // 👈 تمرير خيار الإغلاق
             });
             
+            // مسح الحالة
             delete global.userState[userId];
         }
 
