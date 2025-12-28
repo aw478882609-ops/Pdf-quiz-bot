@@ -1,6 +1,6 @@
 // =========================================================
-// 🎮 Vercel Controller - Version 39.0 (Debug Stats)
-// Features: Fix Supabase Count | Error Logging to Vercel
+// 🎮 Vercel Controller - Version 40.0 (Advanced Stats)
+// Features: Detailed Dashboard | Daily Performance | AI Dist
 // =========================================================
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -41,10 +41,7 @@ async function upsertUser(user) {
                 'Prefer': 'resolution=merge-duplicates' 
             }
         });
-    } catch (e) { 
-        // تسجيل الخطأ في Vercel Logs
-        console.error("❌ Supabase Upsert Error:", e.response?.data || e.message); 
-    }
+    } catch (e) { console.error("❌ Supabase Upsert Error:", e.response?.data || e.message); }
 }
 
 async function logUsage(userId, fileId, fileName, count, model, status, method, errorReason = null) {
@@ -67,78 +64,102 @@ async function logUsage(userId, fileId, fileName, count, model, status, method, 
                 'Content-Type': 'application/json' 
             }
         });
-    } catch (e) { 
-        console.error("❌ Supabase Log Usage Error:", e.response?.data || e.message); 
-    }
+    } catch (e) { console.error("❌ Supabase Log Usage Error:", e.response?.data || e.message); }
 }
 
-// ✅ [تعديل] دالة جلب الإحصائيات العامة مع اللوجات الصحيحة
+// ✅ [تحديث] دالة جلب الإحصائيات التفصيلية
 async function getGlobalStats() {
     try {
-        // 🔥 إضافة 'Prefer': 'count=exact' ضروري لجلب العدد
-        const headers = { 
-            'apikey': SUPABASE_KEY, 
-            'Authorization': `Bearer ${SUPABASE_KEY}`,
-            'Prefer': 'count=exact' 
-        };
+        const headers = { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Prefer': 'count=exact' };
         
-        console.log("📊 Fetching Global Stats..."); // يظهر في Logs
+        // حساب تاريخ بداية اليوم (Midnight)
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayISO = today.toISOString();
 
-        // 1. عدد المستخدمين الكلي
-        const usersRes = await axios.head(`${SUPABASE_URL}/rest/v1/users`, { headers });
-        const totalUsers = usersRes.headers['content-range'] ? usersRes.headers['content-range'].split('/')[1] : '0';
+        // تنفيذ الطلبات بشكل متوازي للسرعة
+        const [
+            totalUsersRes,
+            activeUsersTodayRes,
+            totalLogsRes,
+            totalSuccessRes,
+            logsTodayRes,
+            successTodayRes,
+            failTodayRes,
+            flash25TodayRes,
+            gemma3TodayRes,
+            regexTodayRes
+        ] = await Promise.all([
+            // 1. المستخدمين
+            axios.head(`${SUPABASE_URL}/rest/v1/users`, { headers }),
+            axios.head(`${SUPABASE_URL}/rest/v1/users?last_active=gte.${todayISO}`, { headers }),
+            
+            // 2. الملفات الكلية
+            axios.head(`${SUPABASE_URL}/rest/v1/processing_logs`, { headers }),
+            axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?status=eq.success`, { headers }),
 
-        // 2. عدد الملفات الناجحة
-        const logsSuccess = await axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?status=eq.success`, { headers });
-        const totalSuccess = logsSuccess.headers['content-range'] ? logsSuccess.headers['content-range'].split('/')[1] : '0';
+            // 3. أداء اليوم
+            axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?created_at=gte.${todayISO}`, { headers }),
+            axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?created_at=gte.${todayISO}&status=eq.success`, { headers }),
+            axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?created_at=gte.${todayISO}&status=neq.success`, { headers }),
 
-        // 3. عدد الملفات الفاشلة
-        const logsFail = await axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?status=neq.success`, { headers });
-        const totalFail = logsFail.headers['content-range'] ? logsFail.headers['content-range'].split('/')[1] : '0';
+            // 4. توزيع النماذج (اليوم)
+            axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?created_at=gte.${todayISO}&model_used=eq.gemini-2.5-flash`, { headers }),
+            axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?created_at=gte.${todayISO}&model_used=eq.gemma-3`, { headers }), // افتراضي
+            axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?created_at=gte.${todayISO}&method=eq.regex_fallback`, { headers }) // افتراضي
+        ]);
 
-        console.log(`Stats Result: Users=${totalUsers}, Success=${totalSuccess}, Fail=${totalFail}`);
+        // استخراج الأرقام
+        const getCount = (res) => parseInt(res.headers['content-range']?.split('/')[1] || '0');
 
-        return { totalUsers, totalSuccess, totalFail };
+        const stats = {
+            users: {
+                total: getCount(totalUsersRes),
+                activeToday: getCount(activeUsersTodayRes)
+            },
+            files: {
+                total: getCount(totalLogsRes),
+                successTotal: getCount(totalSuccessRes)
+            },
+            today: {
+                total: getCount(logsTodayRes),
+                success: getCount(successTodayRes),
+                fail: getCount(failTodayRes)
+            },
+            models: {
+                flash25: getCount(flash25TodayRes),
+                gemma3: getCount(gemma3TodayRes),
+                regex: getCount(regexTodayRes)
+            }
+        };
+
+        return stats;
     } catch (e) { 
-        // 🔥 تسجيل تفاصيل الخطأ كاملة لمعرفة السبب
-        console.error("❌ Stats Error:", e.response?.status, e.response?.statusText, e.response?.data || e.message);
+        console.error("❌ Stats Error:", e.response?.status, e.message);
         return null; 
     }
 }
 
-// ✅ [تعديل] دالة جلب إحصائيات مستخدم محدد
+// ✅ دالة جلب إحصائيات مستخدم محدد
 async function getUserStats(targetId) {
     try {
-        const headers = { 
-            'apikey': SUPABASE_KEY, 
-            'Authorization': `Bearer ${SUPABASE_KEY}`
-        };
+        const headers = { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` };
         const countHeaders = { ...headers, 'Prefer': 'count=exact' };
 
-        // بيانات المستخدم
         const userRes = await axios.get(`${SUPABASE_URL}/rest/v1/users?user_id=eq.${targetId}`, { headers });
         if (!userRes.data || userRes.data.length === 0) return null;
         const user = userRes.data[0];
 
-        // عدد محاولاته (HEAD request)
         const logsRes = await axios.head(`${SUPABASE_URL}/rest/v1/processing_logs?user_id=eq.${targetId}`, { headers: countHeaders });
         const totalRequests = logsRes.headers['content-range'] ? logsRes.headers['content-range'].split('/')[1] : '0';
 
         return { ...user, totalRequests };
-    } catch (e) { 
-        console.error("❌ User Stats Error:", e.response?.data || e.message);
-        return null; 
-    }
+    } catch (e) { return null; }
 }
 
 async function sendToGasAndForget(payload) {
-    try {
-        await axios.post(GAS_WEB_APP_URL, payload, { timeout: 1500 });
-    } catch (error) {
-        if (error.code !== 'ECONNABORTED' && !error.message.includes('timeout')) {
-            console.error("⚠️ GAS Connection Error:", error.message);
-        }
-    }
+    try { await axios.post(GAS_WEB_APP_URL, payload, { timeout: 1500 }); } 
+    catch (error) { if (error.code !== 'ECONNABORTED') console.error("⚠️ GAS Connection Error:", error.message); }
 }
 
 // =========================================================
@@ -161,45 +182,56 @@ module.exports = async (req, res) => {
             const text = msg.text.trim();
 
             if (text === '/stats') {
-                await bot.sendMessage(userId, '⏳ <b>جاري جلب البيانات...</b>', { parse_mode: 'HTML' });
+                await bot.sendMessage(userId, '⏳ <b>جاري تحليل البيانات...</b>', { parse_mode: 'HTML' });
                 
-                const stats = await getGlobalStats();
+                const s = await getGlobalStats();
                 
-                if (stats) {
+                if (s) {
+                    // حساب النسب المئوية
+                    const totalSuccessRate = s.files.total > 0 ? Math.round((s.files.successTotal / s.files.total) * 100) : 0;
+                    const todaySuccessRate = s.today.total > 0 ? Math.round((s.today.success / s.today.total) * 100) : 0;
+
                     const report = `📊 <b>الإحصائيات العامة للبوت:</b>\n\n` +
-                                   `👥 <b>عدد المستخدمين:</b> <code>${stats.totalUsers}</code>\n` +
-                                   `✅ <b>عمليات ناجحة:</b> <code>${stats.totalSuccess}</code>\n` +
-                                   `❌ <b>عمليات فاشلة:</b> <code>${stats.totalFail}</code>\n` +
-                                   `📅 <b>التاريخ:</b> ${new Date().toLocaleDateString('ar-EG')}`;
+                                   `👥 <b>المستخدمين:</b>\n` +
+                                   `• الإجمالي: <code>${s.users.total}</code>\n` +
+                                   `• النشطين اليوم: <code>${s.users.activeToday}</code>\n\n` +
+                                   
+                                   `📁 <b>الملفات (الكلي):</b>\n` +
+                                   `• العدد: <code>${s.files.total}</code>\n` +
+                                   `• نسبة النجاح: <code>${totalSuccessRate}%</code>\n\n` +
+
+                                   `📅 <b>أداء اليوم (${s.today.total} ملف):</b>\n` +
+                                   `• نجاح: <code>${s.today.success}</code> (${todaySuccessRate}%)\n` +
+                                   `• فشل: <code>${s.today.fail}</code>\n` +
+                                   `-------------------\n` +
+                                   `🤖 <b>توزيع الذكاء الاصطناعي (اليوم):</b>\n` +
+                                   `• ⚡ Flash 2.5: <code>${s.models.flash25}</code>\n` +
+                                   `• 🛡️ Gemma 3: <code>${s.models.gemma3}</code>\n` +
+                                   `• 🧩 Regex Fallback: <code>${s.models.regex}</code>`;
+                                   
                     await bot.sendMessage(userId, report, { parse_mode: 'HTML' });
                 } else {
-                    // في حالة الفشل، رسالة توضح أن الخطأ تم تسجيله
-                    await bot.sendMessage(userId, '❌ حدث خطأ أثناء جلب الإحصائيات.\nراجع Vercel Logs لمعرفة السبب.');
+                    await bot.sendMessage(userId, '❌ حدث خطأ أثناء جلب الإحصائيات.');
                 }
                 return res.status(200).send('Stats Sent');
             }
 
             if (text.startsWith('/user ')) {
                 const targetId = text.split(' ')[1];
-                if (!targetId) return await bot.sendMessage(userId, '⚠️ يجب كتابة الآيدي. مثال:\n/user 123456789');
+                if (!targetId) return await bot.sendMessage(userId, '⚠️ أرسل الآيدي: /user 123');
 
-                const uStats = await getUserStats(targetId);
-                if (uStats) {
-                    const joinedDate = new Date(uStats.joined_at).toLocaleDateString('ar-EG');
-                    const lastActive = new Date(uStats.last_active).toLocaleString('ar-EG');
-                    
-                    const report = `👤 <b>تقرير المستخدم:</b>\n\n` +
-                                   `🆔 <b>الآيدي:</b> <code>${uStats.user_id}</code>\n` +
-                                   `📛 <b>الاسم:</b> ${uStats.first_name}\n` +
-                                   `📧 <b>المعرف:</b> @${uStats.username || 'بدون'}\n` +
-                                   `📅 <b>انضم منذ:</b> ${joinedDate}\n` +
-                                   `⌚ <b>آخر نشاط:</b> ${lastActive}\n` +
-                                   `📂 <b>عدد الملفات المرسلة:</b> ${uStats.totalRequests}`;
-                    await bot.sendMessage(userId, report, { parse_mode: 'HTML' });
+                const u = await getUserStats(targetId);
+                if (u) {
+                    const joined = new Date(u.joined_at).toLocaleDateString('ar-EG');
+                    const active = new Date(u.last_active).toLocaleString('ar-EG');
+                    await bot.sendMessage(userId, 
+                        `👤 <b>تقرير المستخدم:</b>\n🆔 <code>${u.user_id}</code>\n📛 ${u.first_name}\n📂 ملفات: ${u.totalRequests}\n📅 انضم: ${joined}\n⌚ نشط: ${active}`, 
+                        { parse_mode: 'HTML' }
+                    );
                 } else {
-                    await bot.sendMessage(userId, '❌ لم يتم العثور على بيانات (أو حدث خطأ، راجع اللوجات).');
+                    await bot.sendMessage(userId, '❌ المستخدم غير موجود.');
                 }
-                return res.status(200).send('User Stats Sent');
+                return res.status(200).send('User Stats');
             }
             
             if (text === '/repairon') { global.isMaintenanceMode = true; await bot.sendMessage(ADMIN_CHAT_ID, '🛠️ ON'); return res.status(200).send('ON'); }
@@ -228,33 +260,23 @@ module.exports = async (req, res) => {
             }
 
             await upsertUser(fromUser);
-            // تسجيل مبدئي للعملية
             await logUsage(userId, fileId, fileName, 0, null, 'processing', 'url_handover');
 
             const waitMsg = await bot.sendMessage(chatId, '⏳ <b>جاري تحويل الملف للمعالجة...</b>', {parse_mode: 'HTML'});
 
             try {
                 const fileLink = await bot.getFileLink(fileId);
-
                 await bot.editMessageText('🤖 <b>يتم الآن التحميل والتحليل بواسطة Google...</b>\n\n🚀 هذه الطريقة أسرع للملفات الكبيرة.', { 
-                    chat_id: chatId, 
-                    message_id: waitMsg.message_id, 
-                    parse_mode: 'HTML' 
+                    chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'HTML' 
                 });
                 
                 await sendToGasAndForget({
-                    action: 'analyze_async',
-                    fileUrl: fileLink,
-                    chatId: chatId,
-                    userId: userId,
-                    userName: userName,
-                    userUsername: fromUser.username,
-                    fileId: fileId,
-                    fileName: fileName
+                    action: 'analyze_async', fileUrl: fileLink, chatId: chatId, userId: userId,
+                    userName: userName, userUsername: fromUser.username, fileId: fileId, fileName: fileName
                 });
 
             } catch (err) {
-                console.error("❌ PDF Handover Error:", err.message); // Log
+                console.error("❌ PDF Error:", err.message);
                 await logUsage(userId, fileId, fileName, 0, null, 'failed', 'url_handover', err.message);
                 await bot.sendMessage(chatId, '❌ حدث خطأ أثناء تجهيز الملف.');
             }
@@ -280,24 +302,18 @@ module.exports = async (req, res) => {
                     await bot.answerCallbackQuery(cb.id, { text: `🚀 جاري البدء${modeText}...` });
                     await bot.sendMessage(chatId, `⚡ <b>جاري إرسال ${count} سؤال...</b>`, {parse_mode: 'HTML'});
                     
-                    // تحديث الحالة لـ success في السجل
+                    // تسجيل نجاح العملية واسم النموذج المستخدم فعلياً
+                    // نفترض هنا أن model القادم من GAS هو اسم النموذج (مثل gemini-2.5-flash)
                     await logUsage(userId, null, 'Quiz Execution', count, model, 'success', 'quiz_send');
 
                     await sendToGasAndForget({
-                        action: 'execute_send',
-                        userId: userId,
-                        targetChatId: chatId,
-                        chatType: 'private',
-                        sessionKey: uniqueKey,
-                        closePolls: closePolls
+                        action: 'execute_send', userId: userId, targetChatId: chatId,
+                        chatType: 'private', sessionKey: uniqueKey, closePolls: closePolls
                     });
                 } 
             }
         }
 
-    } catch (e) { 
-        // تسجيل الأخطاء العامة في Vercel
-        console.error("💥 General Vercel Error:", e.message); 
-    }
+    } catch (e) { console.error("💥 General Error:", e.message); }
     res.status(200).send('OK');
 };
