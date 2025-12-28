@@ -1,6 +1,6 @@
 // =========================================================
-// 🎮 Vercel Controller - Version 44.2 (Spoiler Support)
-// Features: Interactive Polls | Spoiler Answers | Admin Tools
+// 🎮 Vercel Controller - Version 44.3 (Clean Layout + Spoiler)
+// Features: Spaced Options | Separate Spoiler Answer Line
 // =========================================================
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -25,26 +25,30 @@ if (global.isMaintenanceMode === undefined) global.isMaintenanceMode = false;
 // 🛠️ دوال مساعدة (Helpers)
 // =========================================================
 
-// ✨ دالة تنسيق الكويز كنص (مع دعم Spoiler للإجابة)
+// ✨ دالة تنسيق الكويز (تم التعديل: مسافات وسطر منفصل للإجابة)
 function formatQuizText(quiz) {
-    let text = `<b>${quiz.question}</b>\n\n`;
+    let text = `<b>${quiz.question}</b>\n\n`; // سطر فارغ بعد السؤال
     const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
     
+    // عرض الاختيارات مع سطر فارغ بين كل اختيار
     quiz.options.forEach((opt, index) => {
         const letter = optionLetters[index] || (index + 1);
-        const isCorrect = index === quiz.correctOptionId;
-        
-        // 🔥 التعديل: وضع علامة الصح داخل سبويلر لتكون مشوشة
-        // ستظهر العلامة فقط عند الضغط على المربع المشوش
-        const mark = isCorrect ? ' <span class="tg-spoiler">✅</span>' : '';
-        
-        text += `<b>${letter})</b> ${opt}${mark}\n`;
+        text += `<b>${letter})</b> ${opt}\n\n`; // \n\n تضمن وجود سطر فارغ
     });
 
-    if (quiz.explanation) {
-        // 🔥 التعديل: وضع التوضيح أيضاً داخل سبويلر
-        text += `\n<span class="tg-spoiler">💡 <b>توضيح:</b> ${quiz.explanation}</span>`;
+    // إضافة سطر الإجابة المنفصل (يظهر فقط إذا كان هناك حل)
+    if (quiz.correctOptionId !== null && quiz.correctOptionId >= 0) {
+        const correctLetter = optionLetters[quiz.correctOptionId];
+        const correctText = quiz.options[quiz.correctOptionId];
+        
+        // 🔥 الإجابة في سطر منفصل ومشوشة بالكامل
+        text += `<span class="tg-spoiler">✅ <b>الإجابة الصحيحة:</b> ${correctLetter}) ${correctText}</span>`;
     }
+
+    if (quiz.explanation) {
+        text += `\n\n<span class="tg-spoiler">💡 <b>توضيح:</b> ${quiz.explanation}</span>`;
+    }
+    
     return text;
 }
 
@@ -313,7 +317,7 @@ module.exports = async (req, res) => {
                 if (!global.userState[userId].pending_polls) global.userState[userId].pending_polls = {};
 
                 const previewText = formatQuizText({ ...quizData, correctOptionId: null });
-                const promptText = `${previewText}\n\n👇 *يرجى تحديد الإجابة الصحيحة يدوياً:*`;
+                const promptText = `${previewText}\n👇 *يرجى تحديد الإجابة الصحيحة يدوياً:*`;
                 
                 const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
                 const keyboardButtons = quizData.options.map((option, index) => ({
