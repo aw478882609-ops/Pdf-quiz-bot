@@ -371,19 +371,37 @@ module.exports = async (req, res) => {
                 await bot.answerCallbackQuery(cb.id, { text: '✅ تم الحفظ!' });
             }
 
-            // أزرار إرسال GAS
+            // --- أزرار إرسال GAS ---
             else if (data.startsWith('cmd_send')) {
                 const parts = data.split('|');
-                const count = parts[1]; const model = parts[2]; const uniqueKey = parts[3]; const targetRaw = parts[4]; const closePolls = targetRaw.includes('close'); 
+                const count = parts[1]; 
+                const model = parts[2]; 
+                const uniqueKey = parts[3]; 
+                const targetRaw = parts[4]; 
+                
+                // ✅ التعديل هنا: التعرف على الأوضاع المختلفة
+                const closePolls = targetRaw.includes('close'); 
+                const spoilerMode = targetRaw.includes('spoiler'); // جديد
 
                 if (targetRaw.includes('here')) {
-                    const modeText = closePolls ? " (وحلها)" : "";
+                    let modeText = "";
+                    if (closePolls) modeText = " (وحلها)";
+                    if (spoilerMode) modeText = " (نص مشوش)";
+
                     await bot.answerCallbackQuery(cb.id, { text: `🚀 جاري البدء${modeText}...` });
                     await bot.sendMessage(chatId, `⚡ <b>جاري إرسال ${count} سؤال...</b>`, {parse_mode: 'HTML'});
+                    
                     await logUsage(userId, null, 'Quiz', count, model, 'success', 'quiz_send');
+                    
+                    // إرسال البيانات إلى GAS مع المتغير الجديد spoilerMode
                     await sendToGasAndForget({
-                        action: 'execute_send', userId: userId, targetChatId: chatId,
-                        chatType: 'private', sessionKey: uniqueKey, closePolls: closePolls
+                        action: 'execute_send', 
+                        userId: userId, 
+                        targetChatId: chatId,
+                        chatType: 'private', 
+                        sessionKey: uniqueKey, 
+                        closePolls: closePolls,
+                        spoilerMode: spoilerMode // ✅ تمرير المتغير
                     });
                 } 
             }
