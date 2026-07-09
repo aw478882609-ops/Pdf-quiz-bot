@@ -1,6 +1,6 @@
 // =========================================================
-// 🎮 Vercel Controller - Version 44.5 (Restored Admin Help + Spoiler)
-// Features: Detailed Admin Help | HTML Escaping | Spoiler Mode
+// 🎮 Vercel Controller - Version 45.0 (Text-to-Quiz Added)
+// Features: Detailed Admin Help | HTML Escaping | Spoiler Mode | Text-to-Quiz Extraction
 // =========================================================
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -21,6 +21,9 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY;
 if (!global.userState) global.userState = {};
 if (global.isMaintenanceMode === undefined) global.isMaintenanceMode = false;
 
+// حد أقصى تقريبي لطول النص المجمّع قبل رفض استلام المزيد (يطابق حد GAS)
+const MAX_TEXT_BUFFER_LENGTH = 30000;
+
 // =========================================================
 // 🛠️ دوال مساعدة (Helpers)
 // =========================================================
@@ -40,7 +43,7 @@ function escapeHtml(text) {
 function formatQuizText(quiz) {
     let text = `<b>${escapeHtml(quiz.question)}</b>\n\n`; // سطر فارغ بعد السؤال
     const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
-    
+
     // عرض الاختيارات
     quiz.options.forEach((opt, index) => {
         const letter = optionLetters[index] || (index + 1);
@@ -61,6 +64,20 @@ function formatQuizText(quiz) {
     return text;
 }
 
+// ✂️ دمج أجزاء النص المرسلة على أكثر من رسالة، مع مراعاة قطع الكلمات بين الأجزاء
+function smartJoinParts(parts) {
+    let result = '';
+    for (let i = 0; i < parts.length; i++) {
+        if (i === 0) { result = parts[i]; continue; }
+        const prevChar = result.slice(-1);
+        // لو الجزء السابق انتهى بمسافة/علامة ترقيم، نضيف سطر جديد بينهما
+        // غير كده (يعني في المنتصف/داخل كلمة) نلزقهم على طول من غير فاصل
+        const endsClean = /[\s\n.!?؟،,;:)\]}]$/.test(prevChar) || prevChar === '';
+        result += endsClean ? '\n' + parts[i] : parts[i];
+    }
+    return result;
+}
+
 // =========================================================
 // 🗄️ دوال قاعدة البيانات (Supabase)
 // =========================================================
@@ -69,7 +86,7 @@ async function setBotConfig(key, value) {
     if (!SUPABASE_URL || !SUPABASE_KEY) return;
     try {
         await axios.post(`${SUPABASE_URL}/rest/v1/bot_config`, {
-            key: key, value: value 
+            key: key, value: value
         }, {
             headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates' }
         });
@@ -84,6 +101,26 @@ async function getBotConfig(key) {
         });
         return res.data?.[0]?.value || null;
     } catch (e) { return null; }
+}
+
+async function deleteBotConfig(key) {
+    if (!SUPABASE_URL || !SUPABASE_KEY) return;
+    try {
+        await axios.delete(`${SUPABASE_URL}/rest/v1/bot_config?key=eq.${key}`, {
+            headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` }
+        });
+    } catch (e) { console.error("❌ Config Delete Error:", e.message); }
+}
+
+// --- إدارة مخزن نص "تحويل النص إلى أسئلة" (يعتمد على bot_config الموجودة أصلاً) ---
+async function getTextBuffer(userId) {
+    return await getBotConfig(`textbuf_${userId}`);
+}
+async function setTextBuffer(userId, value) {
+    await setBotConfig(`textbuf_${userId}`, value);
+}
+async function clearTextBuffer(userId) {
+    await deleteBotConfig(`textbuf_${userId}`);
 }
 
 async function upsertUser(user, alertIdSeen = null) {
@@ -134,13 +171,13 @@ async function logUsage(userId, fileId, fileName, count, model, status, method, 
 
 async function checkAndSendAlert(chatId, user) {
     const alertCfg = await getBotConfig('global_alert');
-    if (!alertCfg || !alertCfg.text || !alertCfg.id) return; 
+    if (!alertCfg || !alertCfg.text || !alertCfg.id) return;
     const dbUser = await getUserData(user.id);
     if (!dbUser || dbUser.seen_alert_id !== alertCfg.id) {
         await bot.sendMessage(chatId, `🔔 <b>تنويه هام:</b>\n\n${alertCfg.text}`, { parse_mode: 'HTML' });
         await upsertUser(user, alertCfg.id);
     } else {
-        await upsertUser(user); 
+        await upsertUser(user);
     }
 }
 
@@ -177,7 +214,7 @@ async function getUserStats(targetId) {
 }
 
 async function sendToGasAndForget(payload) {
-    try { await axios.post(GAS_WEB_APP_URL, payload, { timeout: 1500 }); } 
+    try { await axios.post(GAS_WEB_APP_URL, payload, { timeout: 1500 }); }
     catch (error) { if (error.code !== 'ECONNABORTED') console.error("⚠️ GAS Connection Error:", error.message); }
 }
 
@@ -203,24 +240,24 @@ module.exports = async (req, res) => {
             // 1. دليل الأوامر (المحسن والمفصل)
             if (text === '/adminhelp' || text === '/cmds') {
                 const helpMsg = `🛠️ <b>لوحة التحكم والأوامر الإدارية:</b>\n\n` +
-                                
+
                                 `📊 <b>الإحصائيات والتقارير:</b>\n` +
                                 `• <code>/stats</code>\n` +
                                 ` لعرض الإحصائيات العامة واليومية.\n\n` +
                                 `• <code>/user + الآيدي</code>\n` +
                                 ` مثال: <code>/user 123456789</code>\n` +
                                 ` لعرض تقرير عن مستخدم معين.\n\n` +
-                                
+
                                 `⚙️ <b>الإعدادات العامة:</b>\n` +
                                 `• <code>/setwelcome + النص</code>\n` +
                                 ` لتغيير رسالة الترحيب التي تظهر عند البدء.\n\n` +
                                 `• <code>/setalert + النص</code>\n` +
                                 ` لإرسال تنبيه عام يظهر لجميع المستخدمين مرة واحدة.\n\n` +
-                                
+
                                 `🔧 <b>وضع الصيانة:</b>\n` +
                                 `• <code>/repairon</code> : لتفعيل الصيانة.\n` +
                                 `• <code>/repairoff</code> : لإيقاف الصيانة.`;
-                                
+
                 await bot.sendMessage(userId, helpMsg, { parse_mode: 'HTML' });
                 return res.status(200).send('Help');
             }
@@ -265,7 +302,7 @@ module.exports = async (req, res) => {
 
         // 🚧 التحقق من الصيانة
         if (global.isMaintenanceMode && userId !== ADMIN_CHAT_ID) {
-             if (msg) await bot.sendMessage(msg.chat.id, '⚠️ <b>عذراً، البوت في وضع الصيانة حالياً.</b>\nسنعود للعمل قريباً.', {parse_mode: 'HTML'}); 
+             if (msg) await bot.sendMessage(msg.chat.id, '⚠️ <b>عذراً، البوت في وضع الصيانة حالياً.</b>\nسنعود للعمل قريباً.', {parse_mode: 'HTML'});
              else if (cb) await bot.answerCallbackQuery(cb.id, { text: '⚠️ الصيانة مفعلة.', show_alert: true });
              return res.status(200).send('Maintenance');
         }
@@ -276,10 +313,34 @@ module.exports = async (req, res) => {
         if (msg && msg.text && msg.text.startsWith('/start')) {
             const chatId = msg.chat.id;
             const welcomeCfg = await getBotConfig('welcome_msg');
-            const welcomeText = welcomeCfg?.text || `مرحباً بك ${fromUser.first_name}! 👋\n\n📚 <b>أرسل لي ملف PDF وسأقوم بتحليله.</b>`;
+            const welcomeText = welcomeCfg?.text ||
+                `مرحباً بك ${fromUser.first_name}! 👋\n\n` +
+                `📚 <b>أرسل لي ملف PDF وسأقوم بتحليله واستخراج الأسئلة منه.</b>\n\n` +
+                `📝 أو استخدم الأمر /text لتحويل نص (تكتبه أو تلصقه) إلى أسئلة مباشرة.`;
             await bot.sendMessage(chatId, welcomeText, { parse_mode: 'HTML' });
             await checkAndSendAlert(chatId, fromUser);
             return res.status(200).send('Start');
+        }
+
+        // =========================================================
+        // 0.5️⃣ أمر /text - بدء وضع تحويل النص إلى أسئلة
+        // =========================================================
+        if (msg && msg.text && msg.text.startsWith('/text')) {
+            const chatId = msg.chat.id;
+
+            await clearTextBuffer(userId);
+            await setTextBuffer(userId, { active: true, parts: [], promptMsgId: null });
+
+            await bot.sendMessage(chatId,
+                `📝 <b>وضع تحويل النص إلى أسئلة</b>\n\n` +
+                `أرسل النص الآن (يمكنك إرساله على أكثر من رسالة متتالية لو كان طويلاً أو مقسوماً).\n` +
+                `عند الانتهاء اضغط "✅ تم - استخرج الأسئلة".`,
+                {
+                    parse_mode: 'HTML',
+                    reply_markup: { inline_keyboard: [[{ text: '❌ إلغاء', callback_data: 'cmd_text_cancel' }]] }
+                }
+            );
+            return res.status(200).send('Text Mode Start');
         }
 
         // =========================================================
@@ -290,7 +351,7 @@ module.exports = async (req, res) => {
             const fileId = msg.document.file_id;
             const fileName = msg.document.file_name;
             const userName = `${fromUser.first_name} ${fromUser.last_name || ''}`.trim();
-            
+
             if (msg.document.mime_type !== 'application/pdf') {
                 await bot.sendMessage(chatId, '❌ <b>ملفات PDF فقط.</b>', {parse_mode: 'HTML'}); return res.status(200).send('OK');
             }
@@ -305,7 +366,7 @@ module.exports = async (req, res) => {
                                       `⏳ الرجاء الانتظار، قد تستغرق العملية وقتاً حسب حجم الملف.\n` +
                                       `⚠️ <b>تنبيه:</b> إذا استمرت معالجة الملف أكثر من 6 دقائق، فسيتم إيقاف المعالجة إجبارياً ويجب تقسيم الملف المرسل.`;
                 await bot.editMessageText(processingMsg, { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'HTML' });
-                
+
                 await sendToGasAndForget({
                     action: 'analyze_async', fileUrl: fileLink, chatId: chatId, messageId: waitMsg.message_id,
                     userId: userId, userName: userName, userUsername: fromUser.username, fileId: fileId, fileName: fileName
@@ -342,7 +403,7 @@ module.exports = async (req, res) => {
                     reply_to_message_id: msg.message_id,
                     parse_mode: 'HTML'
                 });
-            } 
+            }
             // الحالة B: الكويز خام (بدون حل)
             else {
                 if (!global.userState[userId]) global.userState[userId] = {};
@@ -350,7 +411,7 @@ module.exports = async (req, res) => {
 
                 const previewText = formatQuizText({ ...quizData, correctOptionId: null });
                 const promptText = `${previewText}\n👇 *يرجى تحديد الإجابة الصحيحة يدوياً:*`;
-                
+
                 const optionLetters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
                 const keyboardButtons = quizData.options.map((option, index) => ({
                     text: optionLetters[index] || (index + 1),
@@ -371,12 +432,65 @@ module.exports = async (req, res) => {
         }
 
         // =========================================================
+        // 2.5️⃣ استقبال أجزاء النص (وضع تحويل النص إلى أسئلة)
+        // =========================================================
+        else if (msg && msg.text && !msg.text.startsWith('/')) {
+            const chatId = msg.chat.id;
+            const buffer = await getTextBuffer(userId);
+
+            if (buffer && buffer.active) {
+                const currentCombined = smartJoinParts(buffer.parts);
+
+                // 📏 حماية من تضخم النص أكثر من اللازم
+                if (currentCombined.length >= MAX_TEXT_BUFFER_LENGTH) {
+                    await bot.sendMessage(chatId,
+                        `⚠️ وصلت للحد الأقصى للطول (${MAX_TEXT_BUFFER_LENGTH} حرف). اضغط "تم" الآن لاستخراج الأسئلة مما تم إرساله حتى الآن.`,
+                        { reply_markup: { inline_keyboard: [
+                            [{ text: '✅ تم - استخرج الأسئلة', callback_data: 'cmd_text_done' }],
+                            [{ text: '❌ إلغاء', callback_data: 'cmd_text_cancel' }]
+                        ] } }
+                    );
+                    return res.status(200).send('Text Buffer Full');
+                }
+
+                buffer.parts.push(msg.text);
+                const combinedLength = smartJoinParts(buffer.parts).length;
+
+                // إخفاء أزرار البرومبت السابق لتفادي تكرار الأزرار على الشاشة
+                if (buffer.promptMsgId) {
+                    try {
+                        await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: buffer.promptMsgId });
+                    } catch (e) { /* تجاهل لو الرسالة اتمسحت أو مالهاش أزرار */ }
+                }
+
+                const promptMsg = await bot.sendMessage(chatId,
+                    `✏️ تم استلام جزء (${msg.text.length} حرف) — الإجمالي: <b>${combinedLength}</b> حرف.\n` +
+                    `أرسل المزيد أو اضغط "تم" للاستخراج.`,
+                    {
+                        parse_mode: 'HTML',
+                        reply_markup: {
+                            inline_keyboard: [
+                                [{ text: '✅ تم - استخرج الأسئلة', callback_data: 'cmd_text_done' }],
+                                [{ text: '❌ إلغاء', callback_data: 'cmd_text_cancel' }]
+                            ]
+                        }
+                    }
+                );
+
+                buffer.promptMsgId = promptMsg.message_id;
+                await setTextBuffer(userId, buffer);
+                return res.status(200).send('Text Part Received');
+            }
+            // لو مفيش سيشن نشطة، لا تفعل شيء (سلوك افتراضي كما كان)
+        }
+
+        // =========================================================
         // 3️⃣ الأزرار (Callbacks)
         // =========================================================
         else if (cb) {
             const chatId = cb.message.chat.id;
             const messageId = cb.message.message_id;
-            const data = cb.data; 
+            const data = cb.data;
 
             // أزرار الكويز اليدوي
             if (data.startsWith('poll_answer_')) {
@@ -388,9 +502,9 @@ module.exports = async (req, res) => {
 
                 const poll_data = global.userState[userId].pending_polls[messageId];
                 poll_data.correctOptionId = parseInt(data.split('_')[2], 10);
-                
+
                 const formattedText = formatQuizText(poll_data);
-                
+
                 await bot.editMessageText(formattedText, {
                     chat_id: chatId,
                     message_id: messageId,
@@ -401,17 +515,54 @@ module.exports = async (req, res) => {
                 await bot.answerCallbackQuery(cb.id, { text: '✅ تم الحفظ!' });
             }
 
+            // إلغاء وضع تحويل النص إلى أسئلة
+            else if (data === 'cmd_text_cancel') {
+                await clearTextBuffer(userId);
+                await bot.answerCallbackQuery(cb.id, { text: '❌ تم الإلغاء.' });
+                await bot.editMessageText('❌ تم إلغاء عملية تحويل النص.', { chat_id: chatId, message_id: messageId });
+            }
+
+            // إنهاء استلام النص وبدء الاستخراج
+            else if (data === 'cmd_text_done') {
+                const buffer = await getTextBuffer(userId);
+
+                if (!buffer || !buffer.active || !buffer.parts || buffer.parts.length === 0) {
+                    await bot.answerCallbackQuery(cb.id, { text: '⚠️ لا يوجد نص محفوظ.', show_alert: true });
+                    return res.status(200).send('OK');
+                }
+
+                const fullText = smartJoinParts(buffer.parts);
+                await clearTextBuffer(userId);
+
+                await bot.answerCallbackQuery(cb.id, { text: '🚀 جاري التحليل...' });
+                await bot.editMessageText(`⏳ <b>جاري تحليل النص (${fullText.length} حرف) بالذكاء الاصطناعي...</b>`, {
+                    chat_id: chatId, message_id: messageId, parse_mode: 'HTML'
+                });
+
+                const userName = `${fromUser.first_name} ${fromUser.last_name || ''}`.trim();
+                await logUsage(userId, null, 'Text Input', 0, null, 'processing', 'text_extraction');
+
+                await sendToGasAndForget({
+                    action: 'analyze_text_async',
+                    userId: userId,
+                    chatId: chatId,
+                    userName: userName,
+                    userUsername: fromUser.username,
+                    text: fullText
+                });
+            }
+
             // --- أزرار إرسال GAS ---
             else if (data.startsWith('cmd_send')) {
                 const parts = data.split('|');
-                const count = parts[1]; 
-                const model = parts[2]; 
-                const uniqueKey = parts[3]; 
-                const targetRaw = parts[4]; 
-                
+                const count = parts[1];
+                const model = parts[2];
+                const uniqueKey = parts[3];
+                const targetRaw = parts[4];
+
                 // ✅ التعرف على وضع النص المشوش (Spoiler)
-                const closePolls = targetRaw.includes('close'); 
-                const spoilerMode = targetRaw.includes('spoiler'); 
+                const closePolls = targetRaw.includes('close');
+                const spoilerMode = targetRaw.includes('spoiler');
 
                 if (targetRaw.includes('here')) {
                     let modeText = "";
@@ -420,20 +571,20 @@ module.exports = async (req, res) => {
 
                     await bot.answerCallbackQuery(cb.id, { text: `🚀 جاري البدء${modeText}...` });
                     await bot.sendMessage(chatId, `⚡ <b>جاري إرسال ${count} سؤال...</b>`, {parse_mode: 'HTML'});
-                    
+
                     await logUsage(userId, null, 'Quiz', count, model, 'success', 'quiz_send');
-                    
+
                     // تمرير spoilerMode إلى GAS
                     await sendToGasAndForget({
-                        action: 'execute_send', 
-                        userId: userId, 
+                        action: 'execute_send',
+                        userId: userId,
                         targetChatId: chatId,
-                        chatType: 'private', 
-                        sessionKey: uniqueKey, 
+                        chatType: 'private',
+                        sessionKey: uniqueKey,
                         closePolls: closePolls,
-                        spoilerMode: spoilerMode 
+                        spoilerMode: spoilerMode
                     });
-                } 
+                }
             }
         }
 
