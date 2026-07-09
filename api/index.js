@@ -1,6 +1,19 @@
 // =========================================================
-// 🎮 Vercel Controller - Version 45.0 (Text-to-Quiz Added)
-// Features: Detailed Admin Help | HTML Escaping | Spoiler Mode | Text-to-Quiz Extraction
+// 🎮 Vercel Controller - Version 46.0 (Image-to-Quiz Added + Stats Fix)
+// Features: Detailed Admin Help | HTML Escaping | Spoiler Mode | Text-to-Quiz | Image-to-Quiz
+//
+// 🩹 CHANGELOG vs 45.0:
+// 1) FIX (stats): logUsage() now requests `Prefer: return=representation` from Supabase
+//    and returns the inserted row's id. Every place that logs a 'processing' entry now
+//    captures that id (`logId`) and forwards it to GAS so GAS can PATCH the same row to
+//    'success'/'failed' once the AI actually finishes. Previously these rows were stuck
+//    on 'processing' forever, so /stats success-rate numbers were meaningless.
+// 2) FIX (stats): the initial 'processing' log no longer defaults model_used to
+//    'gemini-2.5-flash' (it's unknown at that point) — it's left null until GAS reports
+//    back the real model that succeeded/failed.
+// 3) NEW: images are now accepted. Handles both compressed Telegram photos (msg.photo)
+//    and images sent as files (msg.document with an image/* mime type), forwarding them
+//    to a new GAS action `analyze_image_async`.
 // =========================================================
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -150,23 +163,32 @@ async function getUserData(userId) {
     } catch (e) { return null; }
 }
 
+// ✨ FIX: يطلب return=representation عشان نقدر نرجّع الـ id بتاع السجل، ونستخدمه بعدين
+// عشان نقفل نفس السجل بحالة success/failed بدل ما يفضل عالق على 'processing' للأبد.
+// كمان model_used بقى null بدل الافتراضي 'gemini-2.5-flash' لأنه لسه مش معروف وقت الإنشاء.
 async function logUsage(userId, fileId, fileName, count, model, status, method, errorReason = null) {
-    if (!SUPABASE_URL || !SUPABASE_KEY) return;
+    if (!SUPABASE_URL || !SUPABASE_KEY) return null;
     try {
-        await axios.post(`${SUPABASE_URL}/rest/v1/processing_logs`, {
+        const res = await axios.post(`${SUPABASE_URL}/rest/v1/processing_logs`, {
             user_id: userId,
             file_id: fileId || null,
             file_name: fileName || 'unknown',
             status: status,
             method: method || 'vision',
-            model_used: model || 'gemini-2.5-flash',
+            model_used: model || null,
             questions_count: parseInt(count) || 0,
             error_reason: errorReason,
             created_at: new Date().toISOString()
         }, {
-            headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json' }
+            headers: {
+                'apikey': SUPABASE_KEY,
+                'Authorization': `Bearer ${SUPABASE_KEY}`,
+                'Content-Type': 'application/json',
+                'Prefer': 'return=representation'
+            }
         });
-    } catch (e) { console.error("❌ Log Error:", e.message); }
+        return res.data?.[0]?.id || null;
+    } catch (e) { console.error("❌ Log Error:", e.message); return null; }
 }
 
 async function checkAndSendAlert(chatId, user) {
@@ -315,7 +337,7 @@ module.exports = async (req, res) => {
             const welcomeCfg = await getBotConfig('welcome_msg');
             const welcomeText = welcomeCfg?.text ||
                 `مرحباً بك ${fromUser.first_name}! 👋\n\n` +
-                `📚 <b>أرسل لي ملف PDF وسأقوم بتحليله واستخراج الأسئلة منه.</b>\n\n` +
+                `📚 <b>أرسل لي ملف PDF أو صورة وسأقوم بتحليلها واستخراج الأسئلة منها.</b>\n\n` +
                 `📝 أو استخدم الأمر /text لتحويل نص (تكتبه أو تلصقه) إلى أسئلة مباشرة.`;
             await bot.sendMessage(chatId, welcomeText, { parse_mode: 'HTML' });
             await checkAndSendAlert(chatId, fromUser);
@@ -344,36 +366,83 @@ module.exports = async (req, res) => {
         }
 
         // =========================================================
-        // 1️⃣ استلام الملفات (PDF)
+        // 1️⃣ استلام الملفات (PDF أو صورة مرسلة كملف)
         // =========================================================
         if (msg && msg.document) {
             const chatId = msg.chat.id;
             const fileId = msg.document.file_id;
             const fileName = msg.document.file_name;
+            const docMimeType = msg.document.mime_type || '';
             const userName = `${fromUser.first_name} ${fromUser.last_name || ''}`.trim();
 
-            if (msg.document.mime_type !== 'application/pdf') {
-                await bot.sendMessage(chatId, '❌ <b>ملفات PDF فقط.</b>', {parse_mode: 'HTML'}); return res.status(200).send('OK');
+            const isPdf = docMimeType === 'application/pdf';
+            const isImage = docMimeType.startsWith('image/');
+
+            // ✨ الآن نقبل PDF أو أي صورة مرسلة كملف (بدل رفض أي شيء غير PDF)
+            if (!isPdf && !isImage) {
+                await bot.sendMessage(chatId, '❌ <b>البوت يدعم ملفات PDF أو الصور فقط.</b>', {parse_mode: 'HTML'});
+                return res.status(200).send('OK');
             }
 
             await checkAndSendAlert(chatId, fromUser);
-            await logUsage(userId, fileId, fileName, 0, null, 'processing', 'url_handover');
-            const waitMsg = await bot.sendMessage(chatId, '⏳ <b>جاري تحضير الملف...</b>', {parse_mode: 'HTML'});
+            const method = isPdf ? 'url_handover' : 'image_vision';
+            const logId = await logUsage(userId, fileId, fileName, 0, null, 'processing', method);
+
+            const waitLabel = isPdf ? 'الملف' : 'الصورة';
+            const waitMsg = await bot.sendMessage(chatId, `⏳ <b>جاري تحضير ${waitLabel}...</b>`, {parse_mode: 'HTML'});
 
             try {
                 const fileLink = await bot.getFileLink(fileId);
-                const processingMsg = `🤖 <b>يتم تحليل الملف واستخراج الأسئلة بالذكاء الاصطناعي...</b>\n\n` +
-                                      `⏳ الرجاء الانتظار، قد تستغرق العملية وقتاً حسب حجم الملف.\n` +
-                                      `⚠️ <b>تنبيه:</b> إذا استمرت معالجة الملف أكثر من 6 دقائق، فسيتم إيقاف المعالجة إجبارياً ويجب تقسيم الملف المرسل.`;
+                const processingMsg = `🤖 <b>يتم تحليل ${waitLabel} واستخراج الأسئلة بالذكاء الاصطناعي...</b>\n\n` +
+                                      `⏳ الرجاء الانتظار، قد تستغرق العملية وقتاً حسب الحجم.\n` +
+                                      (isPdf ? `⚠️ <b>تنبيه:</b> إذا استمرت معالجة الملف أكثر من 6 دقائق، فسيتم إيقاف المعالجة إجبارياً ويجب تقسيم الملف المرسل.` : '');
                 await bot.editMessageText(processingMsg, { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'HTML' });
 
                 await sendToGasAndForget({
-                    action: 'analyze_async', fileUrl: fileLink, chatId: chatId, messageId: waitMsg.message_id,
-                    userId: userId, userName: userName, userUsername: fromUser.username, fileId: fileId, fileName: fileName
+                    action: isPdf ? 'analyze_async' : 'analyze_image_async',
+                    fileUrl: fileLink, chatId: chatId, messageId: waitMsg.message_id,
+                    userId: userId, userName: userName, userUsername: fromUser.username,
+                    fileId: fileId, fileName: fileName, mimeType: docMimeType, logId: logId
                 });
             } catch (err) {
                 console.error("❌ Error:", err.message);
-                await logUsage(userId, fileId, fileName, 0, null, 'failed', 'url_handover', err.message);
+                await logUsage(userId, fileId, fileName, 0, null, 'failed', method, err.message);
+                await bot.editMessageText('❌ حدث خطأ.', { chat_id: chatId, message_id: waitMsg.message_id });
+            }
+        }
+
+        // =========================================================
+        // 1.5️⃣ استلام الصور المضغوطة (Telegram photo, بدون document) [جديد]
+        // =========================================================
+        else if (msg && msg.photo && msg.photo.length > 0) {
+            const chatId = msg.chat.id;
+            // آخر عنصر في المصفوفة = أعلى دقة متاحة
+            const bestPhoto = msg.photo[msg.photo.length - 1];
+            const fileId = bestPhoto.file_id;
+            const fileName = `photo_${Date.now()}.jpg`;
+            const mimeType = 'image/jpeg';
+            const userName = `${fromUser.first_name} ${fromUser.last_name || ''}`.trim();
+
+            await checkAndSendAlert(chatId, fromUser);
+            const logId = await logUsage(userId, fileId, fileName, 0, null, 'processing', 'image_vision');
+            const waitMsg = await bot.sendMessage(chatId, '⏳ <b>جاري تحضير الصورة...</b>', {parse_mode: 'HTML'});
+
+            try {
+                const fileLink = await bot.getFileLink(fileId);
+                await bot.editMessageText(
+                    `🤖 <b>يتم تحليل الصورة واستخراج الأسئلة بالذكاء الاصطناعي...</b>\n\n⏳ الرجاء الانتظار.`,
+                    { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'HTML' }
+                );
+
+                await sendToGasAndForget({
+                    action: 'analyze_image_async',
+                    fileUrl: fileLink, chatId: chatId, messageId: waitMsg.message_id,
+                    userId: userId, userName: userName, userUsername: fromUser.username,
+                    fileId: fileId, fileName: fileName, mimeType: mimeType, logId: logId
+                });
+            } catch (err) {
+                console.error("❌ Error:", err.message);
+                await logUsage(userId, fileId, fileName, 0, null, 'failed', 'image_vision', err.message);
                 await bot.editMessageText('❌ حدث خطأ.', { chat_id: chatId, message_id: waitMsg.message_id });
             }
         }
@@ -540,7 +609,7 @@ module.exports = async (req, res) => {
                 });
 
                 const userName = `${fromUser.first_name} ${fromUser.last_name || ''}`.trim();
-                await logUsage(userId, null, 'Text Input', 0, null, 'processing', 'text_extraction');
+                const logId = await logUsage(userId, null, 'Text Input', 0, null, 'processing', 'text_extraction');
 
                 await sendToGasAndForget({
                     action: 'analyze_text_async',
@@ -548,7 +617,8 @@ module.exports = async (req, res) => {
                     chatId: chatId,
                     userName: userName,
                     userUsername: fromUser.username,
-                    text: fullText
+                    text: fullText,
+                    logId: logId
                 });
             }
 
