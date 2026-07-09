@@ -1,19 +1,18 @@
 // =========================================================
-// 🎮 Vercel Controller - Version 46.0 (Image-to-Quiz Added + Stats Fix)
-// Features: Detailed Admin Help | HTML Escaping | Spoiler Mode | Text-to-Quiz | Image-to-Quiz
+// 🎮 Vercel Controller - Version 47.0 (Broadcast Added + Admin Notify Fix)
+// Features: Detailed Admin Help | HTML Escaping | Spoiler Mode | Text-to-Quiz | Image-to-Quiz | Broadcast
 //
-// 🩹 CHANGELOG vs 45.0:
-// 1) FIX (stats): logUsage() now requests `Prefer: return=representation` from Supabase
-//    and returns the inserted row's id. Every place that logs a 'processing' entry now
-//    captures that id (`logId`) and forwards it to GAS so GAS can PATCH the same row to
-//    'success'/'failed' once the AI actually finishes. Previously these rows were stuck
-//    on 'processing' forever, so /stats success-rate numbers were meaningless.
-// 2) FIX (stats): the initial 'processing' log no longer defaults model_used to
-//    'gemini-2.5-flash' (it's unknown at that point) — it's left null until GAS reports
-//    back the real model that succeeded/failed.
-// 3) NEW: images are now accepted. Handles both compressed Telegram photos (msg.photo)
-//    and images sent as files (msg.document with an image/* mime type), forwarding them
-//    to a new GAS action `analyze_image_async`.
+// 🩹 CHANGELOG vs 46.0:
+// 1) FIX (admin notifications for gallery photos): analyze_image_async payloads now
+//    include a `sourceType` field ('photo' for compressed gallery photos, 'document'
+//    for anything sent as a file). GAS uses this to pick sendPhoto vs sendDocument
+//    correctly instead of always trying sendDocument, which Telegram silently rejects
+//    for photo-sourced file_ids.
+// 2) NEW: Broadcast feature. Admin sends /broadcast <message>, gets a preview with
+//    Confirm/Cancel buttons, and on confirm the message is queued to GAS which sends
+//    it to every registered user (paginated + rate-limited + time-chained so it
+//    survives GAS's execution limits), then reports final success/fail counts back
+//    to the admin.
 // =========================================================
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -276,6 +275,10 @@ module.exports = async (req, res) => {
                                 `• <code>/setalert + النص</code>\n` +
                                 ` لإرسال تنبيه عام يظهر لجميع المستخدمين مرة واحدة.\n\n` +
 
+                                `📢 <b>البرودكاست:</b>\n` +
+                                `• <code>/broadcast + النص</code>\n` +
+                                ` لإرسال رسالة فورية لجميع المستخدمين المسجلين (بعد معاينة وتأكيد).\n\n` +
+
                                 `🔧 <b>وضع الصيانة:</b>\n` +
                                 `• <code>/repairon</code> : لتفعيل الصيانة.\n` +
                                 `• <code>/repairoff</code> : لإيقاف الصيانة.`;
@@ -316,6 +319,31 @@ module.exports = async (req, res) => {
                 await setBotConfig('global_alert', { text: newAlert, id: alertId });
                 await bot.sendMessage(userId, `✅ تم نشر التنبيه (ID: ${alertId}).`);
                 return res.status(200).send('Alert Set');
+            }
+
+            // ✨ [جديد] /broadcast - معاينة ثم تأكيد قبل الإرسال الفعلي لكل المستخدمين
+            if (text.startsWith('/broadcast ')) {
+                const broadcastText = text.replace('/broadcast ', '').trim();
+
+                if (!broadcastText) {
+                    await bot.sendMessage(userId, '⚠️ اكتب نص الرسالة بعد الأمر. مثال:\n<code>/broadcast مرحباً بالجميع! 🎉</code>', { parse_mode: 'HTML' });
+                    return res.status(200).send('Broadcast Empty');
+                }
+
+                await setBotConfig(`broadcast_pending_${userId}`, { text: broadcastText });
+
+                const preview = `📢 <b>معاينة رسالة البرودكاست:</b>\n\n` +
+                                 `➖➖➖➖➖➖➖➖➖➖\n${broadcastText}\n➖➖➖➖➖➖➖➖➖➖\n\n` +
+                                 `⚠️ <b>سيتم إرسال هذه الرسالة فوراً لكل المستخدمين المسجلين في قاعدة البيانات.</b>\nهل أنت متأكد؟`;
+
+                await bot.sendMessage(userId, preview, {
+                    parse_mode: 'HTML',
+                    reply_markup: { inline_keyboard: [
+                        [{ text: '✅ تأكيد الإرسال للجميع', callback_data: 'cmd_broadcast_confirm' }],
+                        [{ text: '❌ إلغاء', callback_data: 'cmd_broadcast_cancel' }]
+                    ] }
+                });
+                return res.status(200).send('Broadcast Preview');
             }
 
             if (text === '/repairon') { global.isMaintenanceMode = true; await bot.sendMessage(ADMIN_CHAT_ID, '🛠️ ON'); return res.status(200).send('ON'); }
@@ -398,11 +426,14 @@ module.exports = async (req, res) => {
                                       (isPdf ? `⚠️ <b>تنبيه:</b> إذا استمرت معالجة الملف أكثر من 6 دقائق، فسيتم إيقاف المعالجة إجبارياً ويجب تقسيم الملف المرسل.` : '');
                 await bot.editMessageText(processingMsg, { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'HTML' });
 
+                // ✨ sourceType: 'document' — الملف اتبعت كـ Document بغض النظر عن كونه PDF أو صورة،
+                // فـ GAS يعرف يستخدم sendDocument للإشعار الإداري بدون مشاكل توافق.
                 await sendToGasAndForget({
                     action: isPdf ? 'analyze_async' : 'analyze_image_async',
                     fileUrl: fileLink, chatId: chatId, messageId: waitMsg.message_id,
                     userId: userId, userName: userName, userUsername: fromUser.username,
-                    fileId: fileId, fileName: fileName, mimeType: docMimeType, logId: logId
+                    fileId: fileId, fileName: fileName, mimeType: docMimeType, logId: logId,
+                    sourceType: 'document'
                 });
             } catch (err) {
                 console.error("❌ Error:", err.message);
@@ -434,11 +465,15 @@ module.exports = async (req, res) => {
                     { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'HTML' }
                 );
 
+                // ✨ FIX: sourceType: 'photo' — هذا الـ file_id جاي من رسالة "صورة" مضغوطة، مش
+                // Document. GAS دلوقتي بيستخدم دي عشان يبعت للأدمن بـ sendPhoto أولاً بدل
+                // sendDocument اللي كان بيترفض بصمت (silent fail) على النوع ده من الـ file_id.
                 await sendToGasAndForget({
                     action: 'analyze_image_async',
                     fileUrl: fileLink, chatId: chatId, messageId: waitMsg.message_id,
                     userId: userId, userName: userName, userUsername: fromUser.username,
-                    fileId: fileId, fileName: fileName, mimeType: mimeType, logId: logId
+                    fileId: fileId, fileName: fileName, mimeType: mimeType, logId: logId,
+                    sourceType: 'photo'
                 });
             } catch (err) {
                 console.error("❌ Error:", err.message);
@@ -655,6 +690,39 @@ module.exports = async (req, res) => {
                         spoilerMode: spoilerMode
                     });
                 }
+            }
+
+            // ✨ [جديد] تأكيد إرسال البرودكاست
+            else if (data === 'cmd_broadcast_confirm') {
+                if (userId !== ADMIN_CHAT_ID) { await bot.answerCallbackQuery(cb.id); return res.status(200).send('OK'); }
+
+                const pending = await getBotConfig(`broadcast_pending_${userId}`);
+                if (!pending || !pending.text) {
+                    await bot.answerCallbackQuery(cb.id, { text: '⚠️ لا توجد رسالة برودكاست معلقة (ربما انتهت صلاحيتها).', show_alert: true });
+                    return res.status(200).send('OK');
+                }
+
+                await deleteBotConfig(`broadcast_pending_${userId}`);
+                await bot.answerCallbackQuery(cb.id, { text: '🚀 جاري بدء الإرسال...' });
+                await bot.editMessageText(
+                    '🚀 <b>تم بدء إرسال البرودكاست لكل المستخدمين...</b>\nسيصلك تقرير بالنتيجة عند الانتهاء.',
+                    { chat_id: chatId, message_id: messageId, parse_mode: 'HTML' }
+                );
+
+                await sendToGasAndForget({
+                    action: 'broadcast_async',
+                    adminChatId: chatId,
+                    text: pending.text
+                });
+            }
+
+            // ✨ [جديد] إلغاء البرودكاست
+            else if (data === 'cmd_broadcast_cancel') {
+                if (userId !== ADMIN_CHAT_ID) { await bot.answerCallbackQuery(cb.id); return res.status(200).send('OK'); }
+
+                await deleteBotConfig(`broadcast_pending_${userId}`);
+                await bot.answerCallbackQuery(cb.id, { text: '❌ تم الإلغاء.' });
+                await bot.editMessageText('❌ تم إلغاء عملية البرودكاست.', { chat_id: chatId, message_id: messageId });
             }
         }
 
