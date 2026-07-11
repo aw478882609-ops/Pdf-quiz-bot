@@ -1,20 +1,39 @@
 // =========================================================
-// 🎮 Vercel Controller - Version 51.0 (Unlimited Per-User Gemini API Keys)
-// Features: Detailed Admin Help | HTML Escaping | Spoiler Mode | Text-to-Quiz | Image-to-Quiz | Doc-to-Quiz | Broadcast | Quiz-to-PDF | User API Keys
+// 🎮 Vercel Controller - Version 52.0 (File Mode Selection: Extract vs AI-Generate)
+// Features: Detailed Admin Help | HTML Escaping | Spoiler Mode | Text-to-Quiz | Image-to-Quiz | Doc-to-Quiz | Broadcast | Quiz-to-PDF | User API Keys | Extract/Generate Mode Picker
 //
-// 🩹 CHANGELOG vs 50.0:
-// 1) REMOVED: the MAX_USER_KEYS_PER_USER cap (previously 5). Users can now add
-//    an unlimited number of their own Gemini API keys via /addkey. All limit
-//    checks in /addkey, the key-save flow, and /mykeys were removed.
-// 2) REMOVED: the client-side regex format check on pasted keys
-//    (/^[A-Za-z0-9_\-]{20,80}$/). Whatever the user pastes is now sent
-//    straight to validateGeminiApiKey() (a live call against Google's
-//    ListModels endpoint) instead of being pre-filtered locally. If it's
-//    garbage, the real rejection reason from Google is shown to the user.
-// 3) UPDATED: /addkey instructions now tell the user that each key they add
-//    gives the bot roughly ~20 extra file/text/image analyses per day that
-//    are reliably theirs (their own free-tier quota), on top of the shared
-//    pool.
+// 🩹 CHANGELOG vs 51.0:
+// 1) NEW: When a user sends a file or photo, the bot no longer analyzes it
+//    immediately. It first asks the user to choose between two modes via
+//    inline buttons:
+//      📤 "Extract existing questions"  -> old behaviour (mode: 'extract').
+//      🤖 "Generate questions with AI"  -> new behaviour (mode: 'generate').
+// 2) NEW ("extract" branch): after choosing extract mode, the user is asked
+//    whether the bot should also detect section/chapter titles
+//    (extractTitles: true/false), exactly like the old default behaviour
+//    (previously this was always on).
+// 3) NEW ("generate" branch): before anything else, the bot checks whether
+//    the user has at least one of their OWN Gemini API keys saved (via
+//    /addkey). If not, the flow stops and the user is told to add a key
+//    first — generation is never attempted with shared/public keys.
+//    If the user does have keys, the bot asks:
+//      a) How many questions to generate (preset buttons 5/10/15/20/30,
+//         or a custom number typed in, clamped 1-50).
+//      b) Optional custom instructions/prompt (or "تخطي"/"skip" to omit).
+//    These are forwarded to GAS as `questionCount` and `customPrompt`,
+//    together with `mode: 'generate'`. GAS is responsible for using only
+//    the user's personal keys and for asking Gemini to both invent the
+//    questions AND determine their correct answers from the file's content.
+// 4) NEW helpers: getPendingFile/setPendingFile/clearPendingFile (state
+//    machine for the file stored in bot_config under `pendingfile_<id>`,
+//    the same pattern already used for text/quizpdf/addkey buffers) and
+//    startFileAnalysis() (the actual "download file link + notify GAS"
+//    step, now shared by both the extract and generate paths and triggered
+//    only once all the needed choices have been collected).
+// 5) The document/photo message handlers were simplified: they now only
+//    validate the incoming file, stash its metadata in the pending-file
+//    state, and show the mode-picker keyboard. All actual GAS dispatch
+//    logic lives in startFileAnalysis().
 // =========================================================
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -47,6 +66,12 @@ const APPROX_ANALYSES_PER_KEY = 20;
 
 // ⚠️ [51.0] تم حذف MAX_USER_KEYS_PER_USER بالكامل — لا يوجد حد أقصى لعدد المفاتيح
 // التي يمكن للمستخدم إضافتها بعد الآن.
+
+// ✨ [52.0] حدود عدد الأسئلة القابل لطلبه في وضع "إنشاء بالذكاء الاصطناعي" (يطابق
+// الحدود المطبّقة فعلياً داخل GAS: Math.max(1, Math.min(50, ...))).
+const MIN_GENERATE_COUNT = 1;
+const MAX_GENERATE_COUNT = 50;
+const DEFAULT_GENERATE_COUNT = 10;
 
 // ✨ [جديد] أنواع MIME الخاصة بمستندات Word المدعومة، تُعامل مثل PDF تماماً (تحليل مباشر
 // عبر analyze_async مع تمرير mimeType الحقيقي للـ backend بدل افتراض application/pdf).
@@ -181,6 +206,19 @@ async function setAddKeyState(userId, value) {
 }
 async function clearAddKeyState(userId) {
     await deleteBotConfig(`addkeybuf_${userId}`);
+}
+
+// ✨ [52.0] إدارة حالة "الملف المعلّق" — من لحظة استلام PDF/Word/صورة وحتى تحديد
+// المستخدم لكل الخيارات المطلوبة (وضع الاستخراج/الإنشاء، العناوين، عدد الأسئلة،
+// التعليمات الإضافية). نفس نمط bot_config المستخدم في باقي الجلسات المؤقتة.
+async function getPendingFile(userId) {
+    return await getBotConfig(`pendingfile_${userId}`);
+}
+async function setPendingFile(userId, value) {
+    await setBotConfig(`pendingfile_${userId}`, value);
+}
+async function clearPendingFile(userId) {
+    await deleteBotConfig(`pendingfile_${userId}`);
 }
 
 // ✨ مفاتيح API الخاصة بالمستخدمين (جدول user_api_keys منفصل عن bot_config)
@@ -375,6 +413,66 @@ async function sendToGasAndForget(payload) {
 }
 
 // =========================================================
+// 📄 [52.0] بدء التحليل الفعلي بعد اكتمال كل اختيارات المستخدم
+// =========================================================
+// يُستدعى فقط بعد ما المستخدم يحدد:
+//   - الوضع (extract أو generate)
+//   - extractTitles (لو extract) أو questionCount + customPrompt (لو generate)
+// pending يحتوي على: fileId, fileName, mimeType, sourceType, isImage,
+// userName, userUsername, mode, extractTitles, questionCount, customPrompt
+async function startFileAnalysis(userId, fromUser, chatId, messageId, pending) {
+    const isImage = !!pending.isImage;
+    const isGen = pending.mode === 'generate';
+    const waitLabel = isImage ? 'الصورة' : (pending.mimeType === 'application/pdf' ? 'الملف' : 'ملف Word');
+    const method = isImage ? 'image_vision' : 'url_handover';
+
+    const logId = await logUsage(userId, pending.fileId, pending.fileName, 0, null, 'processing', method);
+
+    try {
+        await bot.editMessageText(`⏳ <b>جاري تحضير ${waitLabel}...</b>`, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML' });
+    } catch (e) { /* الرسالة ممكن تكون اتمسحت، نتجاهل */ }
+
+    try {
+        const fileLink = await bot.getFileLink(pending.fileId);
+
+        const processingMsg = isGen
+            ? `🤖 <b>يتم إنشاء ${pending.questionCount || DEFAULT_GENERATE_COUNT} سؤال جديد بالذكاء الاصطناعي من محتوى ${waitLabel}...</b>\n\n⏳ الرجاء الانتظار، قد تستغرق العملية وقتاً حسب الحجم.`
+            : `🤖 <b>يتم تحليل ${waitLabel} واستخراج الأسئلة بالذكاء الاصطناعي...</b>\n\n` +
+              `⏳ الرجاء الانتظار، قد تستغرق العملية وقتاً حسب الحجم.\n` +
+              (!isImage ? `⚠️ <b>تنبيه:</b> إذا استمرت معالجة الملف أكثر من 6 دقائق، فسيتم إيقاف المعالجة إجبارياً ويجب تقسيم الملف المرسل.` : '');
+
+        await bot.editMessageText(processingMsg, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML' });
+
+        // ✨ sourceType بيوصل زي ما هو ('document' أو 'photo') عشان GAS يعرف يستخدم
+        // sendDocument/sendPhoto الصح للإشعار الإداري.
+        // ✨ mode/extractTitles/customPrompt/questionCount بيوصلوا لـ GAS اللي بيقرر
+        // بناءً عليهم يستخدم مفاتيح المستخدم فقط (وضع generate) أو المفاتيح العامة
+        // كمان (وضع extract)، وبيبني البرومبت المناسب.
+        const payload = {
+            action: isImage ? 'analyze_image_async' : 'analyze_async',
+            fileUrl: fileLink, chatId: chatId, messageId: messageId,
+            userId: userId, userName: pending.userName, userUsername: pending.userUsername,
+            fileId: pending.fileId, fileName: pending.fileName, mimeType: pending.mimeType, logId: logId,
+            sourceType: pending.sourceType,
+            mode: isGen ? 'generate' : 'extract'
+        };
+
+        if (isGen) {
+            payload.questionCount = pending.questionCount || DEFAULT_GENERATE_COUNT;
+            payload.customPrompt = pending.customPrompt || '';
+        } else {
+            payload.extractTitles = pending.extractTitles !== false;
+        }
+
+        await sendToGasAndForget(payload);
+    } catch (err) {
+        console.error("❌ Error:", err.message);
+        await logUsage(userId, pending.fileId, pending.fileName, 0, null, 'failed', method, err.message);
+        try { await bot.editMessageText('❌ حدث خطأ.', { chat_id: chatId, message_id: messageId }); } catch (e) { /* تجاهل */ }
+    }
+}
+
+// =========================================================
 // 🎮 المعالج الرئيسي (Main Handler)
 // =========================================================
 module.exports = async (req, res) => {
@@ -420,7 +518,10 @@ module.exports = async (req, res) => {
 
                                 `🔑 <b>مفاتيح API (مستخدمين):</b>\n` +
                                 `• <code>/mykeys</code>, <code>/addkey</code>, <code>/removekey</code>\n` +
-                                ` نفس أوامر المستخدم العادي، تعمل للأدمن أيضاً على مفاتيحه الخاصة. لا يوجد حد أقصى لعدد المفاتيح.`;
+                                ` نفس أوامر المستخدم العادي، تعمل للأدمن أيضاً على مفاتيحه الخاصة. لا يوجد حد أقصى لعدد المفاتيح.\n\n` +
+
+                                `📄 <b>عند إرسال ملف/صورة:</b>\n` +
+                                ` سيُعرض عليك اختيار "استخراج أسئلة موجودة" أو "إنشاء أسئلة بالذكاء الاصطناعي" (تتطلب مفتاحك الخاص).`;
 
                 await bot.sendMessage(userId, helpMsg, { parse_mode: 'HTML' });
                 return res.status(200).send('Help');
@@ -504,10 +605,10 @@ module.exports = async (req, res) => {
             const welcomeCfg = await getBotConfig('welcome_msg');
             const welcomeText = welcomeCfg?.text ||
                 `مرحباً بك ${fromUser.first_name}! 👋\n\n` +
-                `📚 <b>أرسل لي ملف PDF أو Word أو صورة وسأقوم بتحليلها واستخراج الأسئلة منها.</b>\n\n` +
+                `📚 <b>أرسل لي ملف PDF أو Word أو صورة، وسأسألك هل تريد استخراج الأسئلة الموجودة فيه أو إنشاء أسئلة جديدة بالذكاء الاصطناعي.</b>\n\n` +
                 `📝 أو استخدم الأمر /text لتحويل نص (تكتبه أو تلصقه) إلى أسئلة مباشرة.\n\n` +
                 `📄 أو استخدم الأمر /quizpdf لتجميع كويزات محلولة (Quiz Polls) وتحويلها لملف PDF مراجعة.\n\n` +
-                `🔑 <b>جديد:</b> أضف مفتاح Gemini API الخاص بك (مجاني) عبر /addkey ليستخدمه البوت أولاً ويقلل رسائل "السيرفر مشغول"! كل مفتاح يمنحك ما يقارب ${APPROX_ANALYSES_PER_KEY} تحليل إضافي يومياً، ويمكنك إضافة أي عدد من المفاتيح. استخدم /mykeys لعرض مفاتيحك و /removekey لحذفها.`;
+                `🔑 <b>جديد:</b> أضف مفتاح Gemini API الخاص بك (مجاني) عبر /addkey ليستخدمه البوت أولاً ويقلل رسائل "السيرفر مشغول"، وهو <b>مطلوب</b> لميزة "إنشاء أسئلة بالذكاء الاصطناعي". كل مفتاح يمنحك ما يقارب ${APPROX_ANALYSES_PER_KEY} تحليل إضافي يومياً، ويمكنك إضافة أي عدد من المفاتيح. استخدم /mykeys لعرض مفاتيحك و /removekey لحذفها.`;
             await bot.sendMessage(chatId, welcomeText, { parse_mode: 'HTML' });
             await checkAndSendAlert(chatId, fromUser);
             return res.status(200).send('Start');
@@ -568,7 +669,7 @@ module.exports = async (req, res) => {
             const instructions =
 `🔑 <b>أضف مفتاح Gemini API الخاص بك (مجاني)</b>
 
-سيستخدم البوت مفتاحك الخاص أولاً قبل المفاتيح العامة المشتركة، مما يقلل رسائل "السيرفر مشغول" بشكل كبير 🚀
+سيستخدم البوت مفتاحك الخاص أولاً قبل المفاتيح العامة المشتركة في وضع "استخراج الأسئلة"، وهو <b>مطلوب إجبارياً</b> لميزة "إنشاء أسئلة بالذكاء الاصطناعي" من محتوى الملف.
 
 📈 كل مفتاح جديد تضيفه يمنحك تقريباً <b>${APPROX_ANALYSES_PER_KEY} تحليل ملف/نص/صورة إضافي يومياً</b> شبه مضمون، فوق المفاتيح المشتركة. ويمكنك إضافة أي عدد تريده من المفاتيح لزيادة هذا الرصيد أكثر.
 
@@ -590,7 +691,7 @@ module.exports = async (req, res) => {
 
 🔑 <b>Add your own Gemini API key (it's free)</b>
 
-The bot will try your own key first before the shared/public ones — this greatly reduces "server busy" messages 🚀
+The bot will try your own key first before the shared/public ones for "extract" mode, and it's <b>required</b> for the "AI-generate questions" feature.
 
 📈 Each key you add gives you roughly <b>${APPROX_ANALYSES_PER_KEY} extra file/text/image analyses per day</b> that are reliably yours, on top of the shared pool. You can add as many keys as you like to increase this further.
 
@@ -671,6 +772,8 @@ The bot will try your own key first before the shared/public ones — this great
 
         // =========================================================
         // 1️⃣ استلام الملفات (PDF أو Word أو صورة مرسلة كملف)
+        //     ⚠️ [52.0] لا يتم استدعاء GAS هنا مباشرة بعد الآن — يتم فقط تخزين
+        //     بيانات الملف وعرض اختيار الوضع (استخراج / إنشاء بالذكاء الاصطناعي).
         // =========================================================
         if (msg && msg.document) {
             const chatId = msg.chat.id;
@@ -690,39 +793,31 @@ The bot will try your own key first before the shared/public ones — this great
             }
 
             await checkAndSendAlert(chatId, fromUser);
-            const method = isImage ? 'image_vision' : 'url_handover';
-            const logId = await logUsage(userId, fileId, fileName, 0, null, 'processing', method);
 
-            const waitLabel = isImage ? 'الصورة' : (isPdf ? 'الملف' : 'ملف Word');
-            const waitMsg = await bot.sendMessage(chatId, `⏳ <b>جاري تحضير ${waitLabel}...</b>`, {parse_mode: 'HTML'});
+            await clearPendingFile(userId);
+            await setPendingFile(userId, {
+                fileId, fileName, mimeType: docMimeType, sourceType: 'document', isImage,
+                userName, userUsername: fromUser.username, step: 'choose_mode'
+            });
 
-            try {
-                const fileLink = await bot.getFileLink(fileId);
-                const processingMsg = `🤖 <b>يتم تحليل ${waitLabel} واستخراج الأسئلة بالذكاء الاصطناعي...</b>\n\n` +
-                                      `⏳ الرجاء الانتظار، قد تستغرق العملية وقتاً حسب الحجم.\n` +
-                                      (!isImage ? `⚠️ <b>تنبيه:</b> إذا استمرت معالجة الملف أكثر من 6 دقائق، فسيتم إيقاف المعالجة إجبارياً ويجب تقسيم الملف المرسل.` : '');
-                await bot.editMessageText(processingMsg, { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'HTML' });
-
-                // ✨ sourceType: 'document' — الملف اتبعت كـ Document بغض النظر عن كونه PDF أو Word أو صورة،
-                // فـ GAS يعرف يستخدم sendDocument للإشعار الإداري بدون مشاكل توافق.
-                // ✨ mimeType الحقيقي (application/pdf أو docx/doc) بيتبعت لـ GAS، وimages بتاخد مساره الخاص أصلاً.
-                // ✨ userId موجود بالفعل ضمن الـ payload — GAS بيستخدمه عشان يجرب مفاتيح المستخدم أولاً.
-                await sendToGasAndForget({
-                    action: isImage ? 'analyze_image_async' : 'analyze_async',
-                    fileUrl: fileLink, chatId: chatId, messageId: waitMsg.message_id,
-                    userId: userId, userName: userName, userUsername: fromUser.username,
-                    fileId: fileId, fileName: fileName, mimeType: docMimeType, logId: logId,
-                    sourceType: 'document'
-                });
-            } catch (err) {
-                console.error("❌ Error:", err.message);
-                await logUsage(userId, fileId, fileName, 0, null, 'failed', method, err.message);
-                await bot.editMessageText('❌ حدث خطأ.', { chat_id: chatId, message_id: waitMsg.message_id });
-            }
+            await bot.sendMessage(chatId,
+                `📄 <b>كيف تريد التعامل مع هذا الملف؟</b>\n\n` +
+                `📤 <b>استخراج الأسئلة الموجودة:</b> يسحب البوت الأسئلة الموجودة فعلياً في الملف مع إجاباتها المحددة (تظليل/علامة/جدول إجابات).\n\n` +
+                `🤖 <b>إنشاء أسئلة بالذكاء الاصطناعي:</b> يقرأ البوت محتوى الملف وينشئ أسئلة اختيار من متعدد جديدة بنفسه ويحدد إجاباتها من نفس المحتوى (يتطلب مفتاح Gemini API خاص بك).`,
+                {
+                    parse_mode: 'HTML',
+                    reply_markup: { inline_keyboard: [
+                        [{ text: '📤 استخراج أسئلة موجودة', callback_data: 'cmd_filemode_extract' }],
+                        [{ text: '🤖 إنشاء أسئلة بالذكاء الاصطناعي', callback_data: 'cmd_filemode_generate' }],
+                        [{ text: '❌ إلغاء', callback_data: 'cmd_filecancel' }]
+                    ] }
+                }
+            );
         }
 
         // =========================================================
-        // 1.5️⃣ استلام الصور المضغوطة (Telegram photo, بدون document) [جديد]
+        // 1.5️⃣ استلام الصور المضغوطة (Telegram photo, بدون document)
+        //     ⚠️ [52.0] نفس منطق الـ document أعلاه — نعرض اختيار الوضع أولاً.
         // =========================================================
         else if (msg && msg.photo && msg.photo.length > 0) {
             const chatId = msg.chat.id;
@@ -734,31 +829,26 @@ The bot will try your own key first before the shared/public ones — this great
             const userName = `${fromUser.first_name} ${fromUser.last_name || ''}`.trim();
 
             await checkAndSendAlert(chatId, fromUser);
-            const logId = await logUsage(userId, fileId, fileName, 0, null, 'processing', 'image_vision');
-            const waitMsg = await bot.sendMessage(chatId, '⏳ <b>جاري تحضير الصورة...</b>', {parse_mode: 'HTML'});
 
-            try {
-                const fileLink = await bot.getFileLink(fileId);
-                await bot.editMessageText(
-                    `🤖 <b>يتم تحليل الصورة واستخراج الأسئلة بالذكاء الاصطناعي...</b>\n\n⏳ الرجاء الانتظار.`,
-                    { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'HTML' }
-                );
+            await clearPendingFile(userId);
+            await setPendingFile(userId, {
+                fileId, fileName, mimeType, sourceType: 'photo', isImage: true,
+                userName, userUsername: fromUser.username, step: 'choose_mode'
+            });
 
-                // ✨ FIX: sourceType: 'photo' — هذا الـ file_id جاي من رسالة "صورة" مضغوطة، مش
-                // Document. GAS دلوقتي بيستخدم دي عشان يبعت للأدمن بـ sendPhoto أولاً بدل
-                // sendDocument اللي كان بيترفض بصمت (silent fail) على النوع ده من الـ file_id.
-                await sendToGasAndForget({
-                    action: 'analyze_image_async',
-                    fileUrl: fileLink, chatId: chatId, messageId: waitMsg.message_id,
-                    userId: userId, userName: userName, userUsername: fromUser.username,
-                    fileId: fileId, fileName: fileName, mimeType: mimeType, logId: logId,
-                    sourceType: 'photo'
-                });
-            } catch (err) {
-                console.error("❌ Error:", err.message);
-                await logUsage(userId, fileId, fileName, 0, null, 'failed', 'image_vision', err.message);
-                await bot.editMessageText('❌ حدث خطأ.', { chat_id: chatId, message_id: waitMsg.message_id });
-            }
+            await bot.sendMessage(chatId,
+                `🖼️ <b>كيف تريد التعامل مع هذه الصورة؟</b>\n\n` +
+                `📤 <b>استخراج الأسئلة الموجودة:</b> يسحب البوت الأسئلة الموجودة فعلياً في الصورة مع إجاباتها المحددة.\n\n` +
+                `🤖 <b>إنشاء أسئلة بالذكاء الاصطناعي:</b> يقرأ البوت محتوى الصورة وينشئ أسئلة اختيار من متعدد جديدة بنفسه ويحدد إجاباتها (يتطلب مفتاح Gemini API خاص بك).`,
+                {
+                    parse_mode: 'HTML',
+                    reply_markup: { inline_keyboard: [
+                        [{ text: '📤 استخراج أسئلة موجودة', callback_data: 'cmd_filemode_extract' }],
+                        [{ text: '🤖 إنشاء أسئلة بالذكاء الاصطناعي', callback_data: 'cmd_filemode_generate' }],
+                        [{ text: '❌ إلغاء', callback_data: 'cmd_filecancel' }]
+                    ] }
+                }
+            );
         }
 
         // =========================================================
@@ -834,8 +924,9 @@ The bot will try your own key first before the shared/public ones — this great
         }
 
         // =========================================================
-        // 2.5️⃣ استقبال أجزاء النص (وضع تحويل النص إلى أسئلة) أو مفتاح API
-        //       ⚠️ [51.0] لا يوجد فحص شكلي (regex) على المفتاح بعد الآن — يُمرَّر
+        // 2.5️⃣ استقبال أجزاء النص (وضع تحويل النص إلى أسئلة)، مفتاح API،
+        //       أو خطوات "الملف المعلّق" (عدد الأسئلة المخصص / التعليمات الإضافية)
+        //       ⚠️ [51.0] لا يوجد فحص شكلي (regex) على مفتاح API — يُمرَّر
         //       أي نص يلصقه المستخدم مباشرة لـ validateGeminiApiKey().
         // =========================================================
         else if (msg && msg.text && !msg.text.startsWith('/')) {
@@ -893,6 +984,44 @@ The bot will try your own key first before the shared/public ones — this great
                     { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'HTML' }
                 );
                 return res.status(200).send('Key Added');
+            }
+
+            // ✨ [52.0] خطوات "الملف المعلّق" التي تنتظر رسالة نصية من المستخدم:
+            // إدخال عدد أسئلة مخصص، أو تعليمات إضافية لوضع "إنشاء بالذكاء الاصطناعي".
+            const pendingFileState = await getPendingFile(userId);
+
+            if (pendingFileState && pendingFileState.step === 'ask_count_custom') {
+                const raw = msg.text.trim();
+                const n = parseInt(raw, 10);
+
+                if (isNaN(n) || n < 1) {
+                    await bot.sendMessage(chatId, `⚠️ من فضلك أرسل رقم صحيح بين ${MIN_GENERATE_COUNT} و ${MAX_GENERATE_COUNT}.`);
+                    return res.status(200).send('Invalid Count');
+                }
+
+                pendingFileState.questionCount = Math.max(MIN_GENERATE_COUNT, Math.min(MAX_GENERATE_COUNT, n));
+                pendingFileState.step = 'ask_prompt';
+                await setPendingFile(userId, pendingFileState);
+
+                await bot.sendMessage(chatId,
+                    `✏️ <b>عدد الأسئلة: ${pendingFileState.questionCount}</b>\n\n` +
+                    `اكتب الآن أي تعليمات إضافية تريدها للذكاء الاصطناعي (نوع الأسئلة، الصعوبة، اللغة، التركيز على موضوع معين...)، ` +
+                    `أو أرسل كلمة "تخطي" للمتابعة بدون تعليمات إضافية.`,
+                    { parse_mode: 'HTML' }
+                );
+                return res.status(200).send('Count Received');
+            }
+
+            if (pendingFileState && pendingFileState.step === 'ask_prompt') {
+                const raw = msg.text.trim();
+                const customPrompt = (raw.toLowerCase() === 'skip' || raw === 'تخطي') ? '' : raw;
+
+                pendingFileState.customPrompt = customPrompt;
+                await clearPendingFile(userId);
+
+                const waitMsg = await bot.sendMessage(chatId, '⏳ <b>جاري البدء...</b>', { parse_mode: 'HTML' });
+                await startFileAnalysis(userId, fromUser, chatId, waitMsg.message_id, pendingFileState);
+                return res.status(200).send('Generate Prompt Received');
             }
 
             const buffer = await getTextBuffer(userId);
@@ -1048,6 +1177,136 @@ The bot will try your own key first before the shared/public ones — this great
                 } else {
                     await bot.answerCallbackQuery(cb.id, { text: '❌ فشل الحذف.', show_alert: true });
                 }
+            }
+
+            // =========================================================
+            // ✨ [52.0] أزرار اختيار وضع الملف المعلّق (extract / generate)
+            // =========================================================
+
+            // 📤 اختيار وضع "استخراج أسئلة موجودة" -> نسأل عن العناوين
+            else if (data === 'cmd_filemode_extract') {
+                const pending = await getPendingFile(userId);
+                if (!pending || !pending.fileId) {
+                    await bot.answerCallbackQuery(cb.id, { text: '⚠️ انتهت صلاحية هذا الطلب، أعد إرسال الملف.', show_alert: true });
+                    return res.status(200).send('OK');
+                }
+
+                pending.mode = 'extract';
+                pending.step = 'choose_titles';
+                await setPendingFile(userId, pending);
+
+                await bot.answerCallbackQuery(cb.id);
+                await bot.editMessageText(
+                    '📌 هل تريد أن يستخرج البوت أيضاً عناوين الأقسام/الفصول (Section Titles) الموجودة في الملف؟',
+                    {
+                        chat_id: chatId, message_id: messageId,
+                        reply_markup: { inline_keyboard: [
+                            [{ text: '✅ نعم، استخرج العناوين', callback_data: 'cmd_titles_yes' }],
+                            [{ text: '🚫 لا، الأسئلة فقط', callback_data: 'cmd_titles_no' }],
+                            [{ text: '❌ إلغاء', callback_data: 'cmd_filecancel' }]
+                        ] }
+                    }
+                );
+            }
+
+            // 🤖 اختيار وضع "إنشاء أسئلة بالذكاء الاصطناعي" -> نتحقق من وجود مفتاح خاص أولاً
+            else if (data === 'cmd_filemode_generate') {
+                const pending = await getPendingFile(userId);
+                if (!pending || !pending.fileId) {
+                    await bot.answerCallbackQuery(cb.id, { text: '⚠️ انتهت صلاحية هذا الطلب، أعد إرسال الملف.', show_alert: true });
+                    return res.status(200).send('OK');
+                }
+
+                const userKeys = await getUserApiKeysList(userId);
+                if (userKeys.length === 0) {
+                    await clearPendingFile(userId);
+                    await bot.answerCallbackQuery(cb.id, { text: '🔑 تحتاج مفتاح Gemini خاص أولاً.', show_alert: true });
+                    await bot.editMessageText(
+                        `🔑 <b>ميزة "إنشاء أسئلة بالذكاء الاصطناعي" تتطلب إضافة مفتاح Gemini API الخاص بك أولاً (مجاني).</b>\n\n` +
+                        `استخدم الأمر /addkey لإضافة مفتاحك، ثم أعد إرسال الملف مرة أخرى.`,
+                        { chat_id: chatId, message_id: messageId, parse_mode: 'HTML' }
+                    );
+                    return res.status(200).send('OK');
+                }
+
+                pending.mode = 'generate';
+                pending.step = 'ask_count';
+                await setPendingFile(userId, pending);
+
+                await bot.answerCallbackQuery(cb.id);
+                await bot.editMessageText(
+                    '🔢 <b>كم عدد الأسئلة التي تريد إنشاءها؟</b>',
+                    {
+                        chat_id: chatId, message_id: messageId, parse_mode: 'HTML',
+                        reply_markup: { inline_keyboard: [
+                            [{ text: '5', callback_data: 'cmd_qcount_5' }, { text: '10', callback_data: 'cmd_qcount_10' }, { text: '15', callback_data: 'cmd_qcount_15' }],
+                            [{ text: '20', callback_data: 'cmd_qcount_20' }, { text: '30', callback_data: 'cmd_qcount_30' }, { text: '🔢 عدد مخصص', callback_data: 'cmd_qcount_custom' }],
+                            [{ text: '❌ إلغاء', callback_data: 'cmd_filecancel' }]
+                        ] }
+                    }
+                );
+            }
+
+            // ✅/🚫 تحديد إن كان استخراج العناوين مطلوباً -> نبدأ التحليل فوراً
+            else if (data === 'cmd_titles_yes' || data === 'cmd_titles_no') {
+                const pending = await getPendingFile(userId);
+                if (!pending || !pending.fileId) {
+                    await bot.answerCallbackQuery(cb.id, { text: '⚠️ انتهت صلاحية هذا الطلب، أعد إرسال الملف.', show_alert: true });
+                    return res.status(200).send('OK');
+                }
+
+                pending.extractTitles = (data === 'cmd_titles_yes');
+                await clearPendingFile(userId);
+
+                await bot.answerCallbackQuery(cb.id, { text: '🚀 جاري البدء...' });
+                await startFileAnalysis(userId, fromUser, chatId, messageId, pending);
+            }
+
+            // 🔢 اختيار عدد أسئلة جاهز (زر) -> ننتقل مباشرة لطلب التعليمات الإضافية
+            else if (/^cmd_qcount_\d+$/.test(data)) {
+                const pending = await getPendingFile(userId);
+                if (!pending || !pending.fileId) {
+                    await bot.answerCallbackQuery(cb.id, { text: '⚠️ انتهت صلاحية هذا الطلب، أعد إرسال الملف.', show_alert: true });
+                    return res.status(200).send('OK');
+                }
+
+                const count = parseInt(data.replace('cmd_qcount_', ''), 10);
+                pending.questionCount = Math.max(MIN_GENERATE_COUNT, Math.min(MAX_GENERATE_COUNT, count));
+                pending.step = 'ask_prompt';
+                await setPendingFile(userId, pending);
+
+                await bot.answerCallbackQuery(cb.id);
+                await bot.editMessageText(
+                    `✏️ <b>عدد الأسئلة: ${pending.questionCount}</b>\n\n` +
+                    `اكتب الآن أي تعليمات إضافية تريدها للذكاء الاصطناعي (نوع الأسئلة، الصعوبة، اللغة، التركيز على موضوع معين...)، ` +
+                    `أو أرسل كلمة "تخطي" للمتابعة بدون تعليمات إضافية.`,
+                    { chat_id: chatId, message_id: messageId, parse_mode: 'HTML' }
+                );
+            }
+
+            // 🔢 طلب عدد مخصص -> ننتظر رسالة نصية برقم من المستخدم
+            else if (data === 'cmd_qcount_custom') {
+                const pending = await getPendingFile(userId);
+                if (!pending || !pending.fileId) {
+                    await bot.answerCallbackQuery(cb.id, { text: '⚠️ انتهت صلاحية هذا الطلب، أعد إرسال الملف.', show_alert: true });
+                    return res.status(200).send('OK');
+                }
+
+                pending.step = 'ask_count_custom';
+                await setPendingFile(userId, pending);
+
+                await bot.answerCallbackQuery(cb.id);
+                await bot.editMessageText(
+                    `🔢 اكتب عدد الأسئلة المطلوب (رقم بين ${MIN_GENERATE_COUNT} و ${MAX_GENERATE_COUNT}):`,
+                    { chat_id: chatId, message_id: messageId }
+                );
+            }
+
+            // ❌ إلغاء معالجة الملف المعلّق في أي خطوة
+            else if (data === 'cmd_filecancel') {
+                await clearPendingFile(userId);
+                await bot.answerCallbackQuery(cb.id, { text: '❌ تم الإلغاء.' });
+                await bot.editMessageText('❌ تم إلغاء معالجة الملف.', { chat_id: chatId, message_id: messageId });
             }
 
             // --- أزرار إرسال GAS ---
