@@ -1,24 +1,23 @@
 // =========================================================
-// 🎮 Vercel Controller - Version 49.0 (/quizpdf Command Restored + Answer-Required Everywhere)
-// Features: Detailed Admin Help | HTML Escaping | Spoiler Mode | Text-to-Quiz | Image-to-Quiz | Doc-to-Quiz | Broadcast | Quiz-to-PDF
+// 🎮 Vercel Controller - Version 50.0 (Per-User Gemini API Keys)
+// Features: Detailed Admin Help | HTML Escaping | Spoiler Mode | Text-to-Quiz | Image-to-Quiz | Doc-to-Quiz | Broadcast | Quiz-to-PDF | User API Keys
 //
-// 🩹 CHANGELOG vs 48.0:
-// 1) FIX: /quizpdf was never actually implemented in this controller (the backend's
-//    'generate_quiz_pdf' GAS action existed and referenced "the controller's /quizpdf
-//    buffer" in its comments, but no command, buffer, or trigger for it existed here —
-//    so the bot silently ignored /quizpdf). This version adds the full flow:
-//      • /quizpdf starts a collection session (stored per-user in bot_config, same
-//        pattern as the /text buffer).
-//      • While a session is active, each *solved* quiz poll the user sends/forwards is
-//        appended to the session's buffer instead of just being echoed back, with a
-//        running count and "Generate PDF" / "Cancel" buttons.
-//      • Pressing "📄 إنشاء PDF" sends the collected quizzes to GAS's
-//        'generate_quiz_pdf' action, which builds and returns the review PDF.
-// 2) CHANGED (unsolved quizzes are rejected everywhere, including inside /quizpdf
-//    collection): the answer-required check from v48.0 now lives in one shared
-//    helper (quizPollToData) so an unsolved poll is refused the same way whether a
-//    /quizpdf session is active or not — it is never silently skipped or added to
-//    the PDF buffer without an answer.
+// 🩹 CHANGELOG vs 49.0:
+// 1) NEW: /addkey — lets a user add their own Gemini API key. Shows bilingual
+//    (Arabic + English) step-by-step instructions with a direct link to
+//    https://aistudio.google.com/apikey, then waits for the next plain-text
+//    message and treats it as the key. The key is validated live against
+//    Gemini's models list endpoint BEFORE being saved (rejects typos/garbage
+//    immediately with the real reason from Google's API).
+// 2) NEW: /mykeys — lists the user's saved keys (masked, e.g. AIzaSy...ab12)
+//    with the date each was added.
+// 3) NEW: /removekey — shows the user's keys as buttons; tapping one deletes
+//    just that key (ownership-checked: a user can only delete their own).
+// 4) NEW: table `user_api_keys` (Supabase) stores keys per user_id. The GAS
+//    backend (v45.0+) reads this table and tries a user's own keys before
+//    the shared/public pool, which is the whole point: fewer "server busy"
+//    messages for users who add their own free key.
+// 5) A user can add up to MAX_USER_KEYS_PER_USER keys (default 5).
 // =========================================================
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -44,6 +43,9 @@ const MAX_TEXT_BUFFER_LENGTH = 30000;
 
 // حد أقصى لعدد الأسئلة المجمّعة في جلسة /quizpdf الواحدة (حماية من حمولة ضخمة جداً)
 const MAX_QUIZPDF_BUFFER = 300;
+
+// ✨ [جديد v50.0] حد أقصى لعدد مفاتيح API التي يمكن للمستخدم الواحد إضافتها
+const MAX_USER_KEYS_PER_USER = 5;
 
 // ✨ [جديد] أنواع MIME الخاصة بمستندات Word المدعومة، تُعامل مثل PDF تماماً (تحليل مباشر
 // عبر analyze_async مع تمرير mimeType الحقيقي للـ backend بدل افتراض application/pdf).
@@ -106,6 +108,13 @@ function smartJoinParts(parts) {
     return result;
 }
 
+// ✨ [جديد v50.0] يخفي معظم مفتاح الـ API ولا يعرض إلا أول 6 وآخر 4 خانات، عشان
+// المستخدم يقدر يميّز مفاتيحه من بعض من غير ما نعرض المفتاح كامل في الشات.
+function maskApiKey(key) {
+    if (!key || key.length < 10) return '****';
+    return `${key.slice(0, 6)}...${key.slice(-4)}`;
+}
+
 // =========================================================
 // 🗄️ دوال قاعدة البيانات (Supabase)
 // =========================================================
@@ -160,6 +169,74 @@ async function setQuizPdfBuffer(userId, value) {
 }
 async function clearQuizPdfBuffer(userId) {
     await deleteBotConfig(`quizpdfbuf_${userId}`);
+}
+
+// --- إدارة حالة "/addkey" (بانتظار المستخدم يلصق مفتاحه) ---
+async function getAddKeyState(userId) {
+    return await getBotConfig(`addkeybuf_${userId}`);
+}
+async function setAddKeyState(userId, value) {
+    await setBotConfig(`addkeybuf_${userId}`, value);
+}
+async function clearAddKeyState(userId) {
+    await deleteBotConfig(`addkeybuf_${userId}`);
+}
+
+// ✨ [جديد v50.0] مفاتيح API الخاصة بالمستخدمين (جدول user_api_keys منفصل عن bot_config)
+async function getUserApiKeysList(userId) {
+    if (!SUPABASE_URL || !SUPABASE_KEY) return [];
+    try {
+        const res = await axios.get(
+            `${SUPABASE_URL}/rest/v1/user_api_keys?user_id=eq.${userId}&is_active=eq.true&select=id,api_key,added_at&order=added_at.asc`,
+            { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` } }
+        );
+        return res.data || [];
+    } catch (e) { console.error("❌ GetUserKeys Error:", e.message); return []; }
+}
+
+async function addUserApiKeyToDb(userId, apiKey) {
+    if (!SUPABASE_URL || !SUPABASE_KEY) return false;
+    try {
+        await axios.post(`${SUPABASE_URL}/rest/v1/user_api_keys?on_conflict=user_id,api_key`, {
+            user_id: userId, api_key: apiKey, is_active: true
+        }, {
+            headers: {
+                'apikey': SUPABASE_KEY,
+                'Authorization': `Bearer ${SUPABASE_KEY}`,
+                'Content-Type': 'application/json',
+                'Prefer': 'resolution=merge-duplicates'
+            }
+        });
+        return true;
+    } catch (e) { console.error("❌ AddUserKey Error:", e.message); return false; }
+}
+
+async function removeUserApiKeyFromDb(id, userId) {
+    if (!SUPABASE_URL || !SUPABASE_KEY) return false;
+    try {
+        await axios.delete(`${SUPABASE_URL}/rest/v1/user_api_keys?id=eq.${id}&user_id=eq.${userId}`, {
+            headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` }
+        });
+        return true;
+    } catch (e) { console.error("❌ RemoveUserKey Error:", e.message); return false; }
+}
+
+// ✨ [جديد v50.0] يتحقق من صلاحية مفتاح Gemini API فعلياً قبل حفظه، عن طريق نداء
+// خفيف لـ ListModels (لا يستهلك أي كوتا توليد نصوص، فقط يتأكد إن المفتاح مقبول).
+async function validateGeminiApiKey(apiKey) {
+    try {
+        const res = await axios.get(
+            `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
+            { timeout: 10000 }
+        );
+        if (res.status === 200 && res.data && Array.isArray(res.data.models)) {
+            return { valid: true };
+        }
+        return { valid: false, reason: 'Unexpected response from Google.' };
+    } catch (e) {
+        const apiMsg = e.response?.data?.error?.message || e.message;
+        return { valid: false, reason: apiMsg };
+    }
 }
 
 // ✨ يحوّل poll تيليجرام (type: quiz) لكائن quizData موحّد، مستخدَم في كل الأماكن
@@ -336,7 +413,11 @@ module.exports = async (req, res) => {
 
                                 `🔧 <b>وضع الصيانة:</b>\n` +
                                 `• <code>/repairon</code> : لتفعيل الصيانة.\n` +
-                                `• <code>/repairoff</code> : لإيقاف الصيانة.`;
+                                `• <code>/repairoff</code> : لإيقاف الصيانة.\n\n` +
+
+                                `🔑 <b>مفاتيح API (مستخدمين):</b>\n` +
+                                `• <code>/mykeys</code>, <code>/addkey</code>, <code>/removekey</code>\n` +
+                                ` نفس أوامر المستخدم العادي، تعمل للأدمن أيضاً على مفاتيحه الخاصة.`;
 
                 await bot.sendMessage(userId, helpMsg, { parse_mode: 'HTML' });
                 return res.status(200).send('Help');
@@ -422,7 +503,8 @@ module.exports = async (req, res) => {
                 `مرحباً بك ${fromUser.first_name}! 👋\n\n` +
                 `📚 <b>أرسل لي ملف PDF أو Word أو صورة وسأقوم بتحليلها واستخراج الأسئلة منها.</b>\n\n` +
                 `📝 أو استخدم الأمر /text لتحويل نص (تكتبه أو تلصقه) إلى أسئلة مباشرة.\n\n` +
-                `📄 أو استخدم الأمر /quizpdf لتجميع كويزات محلولة (Quiz Polls) وتحويلها لملف PDF مراجعة.`;
+                `📄 أو استخدم الأمر /quizpdf لتجميع كويزات محلولة (Quiz Polls) وتحويلها لملف PDF مراجعة.\n\n` +
+                `🔑 <b>جديد:</b> أضف مفتاح Gemini API الخاص بك (مجاني) عبر /addkey ليستخدمه البوت أولاً ويقلل رسائل "السيرفر مشغول"! استخدم /mykeys لعرض مفاتيحك و /removekey لحذفها.`;
             await bot.sendMessage(chatId, welcomeText, { parse_mode: 'HTML' });
             await checkAndSendAlert(chatId, fromUser);
             return res.status(200).send('Start');
@@ -472,6 +554,124 @@ module.exports = async (req, res) => {
         }
 
         // =========================================================
+        // 0.7️⃣ أمر /addkey - بدء إضافة مفتاح Gemini API الخاص بالمستخدم [جديد v50.0]
+        // =========================================================
+        if (msg && msg.text && msg.text.startsWith('/addkey')) {
+            const chatId = msg.chat.id;
+
+            const existingKeys = await getUserApiKeysList(userId);
+            if (existingKeys.length >= MAX_USER_KEYS_PER_USER) {
+                await bot.sendMessage(chatId,
+                    `⚠️ لقد وصلت للحد الأقصى لعدد المفاتيح (${MAX_USER_KEYS_PER_USER}).\n` +
+                    `استخدم /mykeys لعرض مفاتيحك أو /removekey لحذف أحدها أولاً.\n\n` +
+                    `⚠️ You've reached the maximum number of keys (${MAX_USER_KEYS_PER_USER}).\n` +
+                    `Use /mykeys to view your keys or /removekey to remove one first.`
+                );
+                return res.status(200).send('Max Keys');
+            }
+
+            await setAddKeyState(userId, { active: true });
+
+            const instructions =
+`🔑 <b>أضف مفتاح Gemini API الخاص بك (مجاني)</b>
+
+سيستخدم البوت مفتاحك الخاص أولاً قبل المفاتيح العامة المشتركة، مما يقلل رسائل "السيرفر مشغول" بشكل كبير 🚀
+
+<b>خطوات الحصول على المفتاح:</b>
+1️⃣ افتح الرابط: https://aistudio.google.com/apikey
+2️⃣ سجّل الدخول بحساب Google الخاص بك (أي حساب Gmail).
+3️⃣ اضغط زر <b>"Create API key"</b> (إنشاء مفتاح API).
+4️⃣ اختر <b>"Create API key in new project"</b> (أو مشروع Google Cloud موجود لديك).
+5️⃣ انسخ المفتاح الذي سيظهر (يبدأ عادة بـ <code>AIza...</code>).
+6️⃣ الصق المفتاح هنا في هذه المحادثة مباشرة كرسالة نصية.
+
+⚠️ <b>تنبيهات مهمة:</b>
+• المفتاح مجاني بالكامل ضمن الحد اليومي المجاني (Free Tier) من Google.
+• لا تشارك هذا المفتاح مع أي شخص آخر أبداً — فهو يتيح استخدام حصتك في Google AI Studio.
+• يمكنك حذفه أو إلغاءه في أي وقت من نفس صفحة aistudio.google.com/apikey، أو من هنا عبر /removekey.
+• سنتحقق من صلاحية المفتاح قبل حفظه مباشرة.
+
+━━━━━━━━━━━━━━━━━━
+
+🔑 <b>Add your own Gemini API key (it's free)</b>
+
+The bot will try your own key first before the shared/public ones — this greatly reduces "server busy" messages 🚀
+
+<b>Steps to get your key:</b>
+1️⃣ Open: https://aistudio.google.com/apikey
+2️⃣ Sign in with your Google account (any Gmail account works).
+3️⃣ Click <b>"Create API key"</b>.
+4️⃣ Choose <b>"Create API key in new project"</b> (or an existing Google Cloud project).
+5️⃣ Copy the key that appears (it usually starts with <code>AIza...</code>).
+6️⃣ Paste the key here in this chat as a plain text message.
+
+⚠️ <b>Important notes:</b>
+• The key is completely free within Google's daily free tier.
+• Never share this key with anyone — it grants access to your own Google AI Studio quota.
+• You can revoke it anytime from aistudio.google.com/apikey, or remove it here via /removekey.
+• We'll validate the key with Google before saving it.
+
+📩 <b>الآن، الصق مفتاحك هنا / Now paste your key here:</b>`;
+
+            await bot.sendMessage(chatId, instructions, {
+                parse_mode: 'HTML',
+                disable_web_page_preview: true,
+                reply_markup: { inline_keyboard: [[{ text: '❌ إلغاء / Cancel', callback_data: 'cmd_addkey_cancel' }]] }
+            });
+            return res.status(200).send('AddKey Mode Start');
+        }
+
+        // =========================================================
+        // 0.8️⃣ أمر /mykeys - عرض مفاتيح المستخدم الحالية [جديد v50.0]
+        // =========================================================
+        if (msg && msg.text && msg.text.startsWith('/mykeys')) {
+            const chatId = msg.chat.id;
+            const keys = await getUserApiKeysList(userId);
+
+            if (keys.length === 0) {
+                await bot.sendMessage(chatId,
+                    `📭 لا تملك أي مفاتيح API مضافة حالياً.\nاستخدم /addkey لإضافة مفتاحك الخاص (مجاني).\n\n` +
+                    `📭 You have no API keys added yet.\nUse /addkey to add your own free key.`
+                );
+                return res.status(200).send('No Keys');
+            }
+
+            const list = keys.map((k, i) => {
+                const addedDate = new Date(k.added_at).toLocaleDateString('ar-EG');
+                return `${i + 1}. <code>${maskApiKey(k.api_key)}</code> — ${addedDate}`;
+            }).join('\n');
+
+            await bot.sendMessage(chatId,
+                `🔑 <b>مفاتيحك المضافة (${keys.length}/${MAX_USER_KEYS_PER_USER}):</b>\n\n${list}\n\n` +
+                `➕ /addkey لإضافة مفتاح جديد\n🗑 /removekey لحذف مفتاح`,
+                { parse_mode: 'HTML' }
+            );
+            return res.status(200).send('My Keys');
+        }
+
+        // =========================================================
+        // 0.9️⃣ أمر /removekey - حذف أحد مفاتيح المستخدم [جديد v50.0]
+        // =========================================================
+        if (msg && msg.text && msg.text.startsWith('/removekey')) {
+            const chatId = msg.chat.id;
+            const keys = await getUserApiKeysList(userId);
+
+            if (keys.length === 0) {
+                await bot.sendMessage(chatId, '📭 لا تملك أي مفاتيح لحذفها.\n📭 You have no keys to remove.');
+                return res.status(200).send('No Keys');
+            }
+
+            const buttons = keys.map((k) => ([{ text: `🗑 ${maskApiKey(k.api_key)}`, callback_data: `cmd_removekey_${k.id}` }]));
+            buttons.push([{ text: '❌ إلغاء / Cancel', callback_data: 'cmd_removekey_cancel' }]);
+
+            await bot.sendMessage(chatId,
+                '🗑 <b>اختر المفتاح الذي تريد حذفه:</b>\n🗑 <b>Select the key you want to remove:</b>',
+                { parse_mode: 'HTML', reply_markup: { inline_keyboard: buttons } }
+            );
+            return res.status(200).send('Remove Key Prompt');
+        }
+
+        // =========================================================
         // 1️⃣ استلام الملفات (PDF أو Word أو صورة مرسلة كملف)
         // =========================================================
         if (msg && msg.document) {
@@ -508,6 +708,7 @@ module.exports = async (req, res) => {
                 // ✨ sourceType: 'document' — الملف اتبعت كـ Document بغض النظر عن كونه PDF أو Word أو صورة،
                 // فـ GAS يعرف يستخدم sendDocument للإشعار الإداري بدون مشاكل توافق.
                 // ✨ mimeType الحقيقي (application/pdf أو docx/doc) بيتبعت لـ GAS، وimages بتاخد مساره الخاص أصلاً.
+                // ✨ userId موجود بالفعل ضمن الـ payload — GAS (v45.0+) بيستخدمه عشان يجرب مفاتيح المستخدم أولاً.
                 await sendToGasAndForget({
                     action: isImage ? 'analyze_image_async' : 'analyze_async',
                     fileUrl: fileLink, chatId: chatId, messageId: waitMsg.message_id,
@@ -635,10 +836,79 @@ module.exports = async (req, res) => {
         }
 
         // =========================================================
-        // 2.5️⃣ استقبال أجزاء النص (وضع تحويل النص إلى أسئلة)
+        // 2.5️⃣ استقبال أجزاء النص (وضع تحويل النص إلى أسئلة) أو مفتاح API [محدّث v50.0]
         // =========================================================
         else if (msg && msg.text && !msg.text.startsWith('/')) {
             const chatId = msg.chat.id;
+
+            // ✨ [جديد v50.0] أولوية لوضع إضافة مفتاح API الشخصي، لو نشط — يُفحص قبل أي
+            // وضع آخر لأن المستخدم غالباً سيلصق المفتاح كرسالة نصية واحدة فقط.
+            const addKeyState = await getAddKeyState(userId);
+            if (addKeyState && addKeyState.active) {
+                const candidateKey = msg.text.trim();
+                await clearAddKeyState(userId);
+
+                // تحقق أولي سريع من الشكل العام لمفتاح Gemini قبل عمل نداء شبكة له
+                if (!/^[A-Za-z0-9_\-]{20,80}$/.test(candidateKey)) {
+                    await bot.sendMessage(chatId,
+                        `❌ هذا لا يبدو كمفتاح API صالح (تأكد من نسخه كاملاً بدون مسافات). حاول مرة أخرى باستخدام /addkey.\n\n` +
+                        `❌ This doesn't look like a valid API key (make sure you copied it fully with no spaces). Try again with /addkey.`
+                    );
+                    return res.status(200).send('Invalid Key Format');
+                }
+
+                const waitMsg = await bot.sendMessage(chatId, '⏳ جاري التحقق من المفتاح... / Validating your key...');
+
+                const existingKeys = await getUserApiKeysList(userId);
+
+                if (existingKeys.some(k => k.api_key === candidateKey)) {
+                    await bot.editMessageText(
+                        '⚠️ هذا المفتاح مضاف بالفعل ضمن مفاتيحك.\n⚠️ This key is already in your list.',
+                        { chat_id: chatId, message_id: waitMsg.message_id }
+                    );
+                    return res.status(200).send('Duplicate Key');
+                }
+                if (existingKeys.length >= MAX_USER_KEYS_PER_USER) {
+                    await bot.editMessageText(
+                        `⚠️ وصلت للحد الأقصى (${MAX_USER_KEYS_PER_USER} مفاتيح).\n⚠️ You've reached the max limit (${MAX_USER_KEYS_PER_USER} keys).`,
+                        { chat_id: chatId, message_id: waitMsg.message_id }
+                    );
+                    return res.status(200).send('Max Keys');
+                }
+
+                const validation = await validateGeminiApiKey(candidateKey);
+
+                if (!validation.valid) {
+                    await bot.editMessageText(
+                        `❌ <b>المفتاح غير صالح.</b>\nالسبب: <code>${escapeHtml(validation.reason || 'unknown')}</code>\n\n` +
+                        `تأكد من نسخ المفتاح كاملاً من aistudio.google.com/apikey بدون مسافات إضافية، ثم أعد المحاولة عبر /addkey.\n\n` +
+                        `❌ <b>Invalid key.</b>\nReason: <code>${escapeHtml(validation.reason || 'unknown')}</code>\n\n` +
+                        `Make sure you copied the full key from aistudio.google.com/apikey with no extra spaces, then try /addkey again.`,
+                        { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'HTML' }
+                    );
+                    return res.status(200).send('Invalid Key');
+                }
+
+                const saved = await addUserApiKeyToDb(userId, candidateKey);
+                if (!saved) {
+                    await bot.editMessageText(
+                        '❌ حدث خطأ أثناء حفظ المفتاح. حاول لاحقاً.\n❌ Error saving the key. Please try again later.',
+                        { chat_id: chatId, message_id: waitMsg.message_id }
+                    );
+                    return res.status(200).send('Save Error');
+                }
+
+                const newCount = existingKeys.length + 1;
+                await bot.editMessageText(
+                    `✅ <b>تم إضافة مفتاحك بنجاح!</b> (<code>${maskApiKey(candidateKey)}</code>)\n` +
+                    `سيستخدمه البوت أولاً قبل المفاتيح العامة. لديك الآن ${newCount}/${MAX_USER_KEYS_PER_USER} مفاتيح.\n\n` +
+                    `✅ <b>Key added successfully!</b> (<code>${maskApiKey(candidateKey)}</code>)\n` +
+                    `The bot will use it first, before the public keys. You now have ${newCount}/${MAX_USER_KEYS_PER_USER} keys.`,
+                    { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'HTML' }
+                );
+                return res.status(200).send('Key Added');
+            }
+
             const buffer = await getTextBuffer(userId);
 
             if (buffer && buffer.active) {
@@ -767,6 +1037,31 @@ module.exports = async (req, res) => {
                     userUsername: fromUser.username,
                     quizzes: collectedQuizzes
                 });
+            }
+
+            // ✨ [جديد v50.0] إلغاء وضع إضافة مفتاح API
+            else if (data === 'cmd_addkey_cancel') {
+                await clearAddKeyState(userId);
+                await bot.answerCallbackQuery(cb.id, { text: '❌ تم الإلغاء.' });
+                await bot.editMessageText('❌ تم إلغاء إضافة المفتاح.\n❌ Cancelled adding the key.', { chat_id: chatId, message_id: messageId });
+            }
+
+            // ✨ [جديد v50.0] إلغاء عملية حذف المفتاح
+            else if (data === 'cmd_removekey_cancel') {
+                await bot.answerCallbackQuery(cb.id, { text: '❌ تم الإلغاء.' });
+                await bot.editMessageText('❌ تم الإلغاء.\n❌ Cancelled.', { chat_id: chatId, message_id: messageId });
+            }
+
+            // ✨ [جديد v50.0] حذف مفتاح محدد (مع التحقق من الملكية عبر user_id في الاستعلام)
+            else if (data.startsWith('cmd_removekey_')) {
+                const keyId = data.replace('cmd_removekey_', '');
+                const removed = await removeUserApiKeyFromDb(keyId, userId);
+                if (removed) {
+                    await bot.answerCallbackQuery(cb.id, { text: '✅ تم الحذف.' });
+                    await bot.editMessageText('✅ تم حذف المفتاح بنجاح.\n✅ Key removed successfully.', { chat_id: chatId, message_id: messageId });
+                } else {
+                    await bot.answerCallbackQuery(cb.id, { text: '❌ فشل الحذف.', show_alert: true });
+                }
             }
 
             // --- أزرار إرسال GAS ---
