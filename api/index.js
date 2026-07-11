@@ -1,23 +1,24 @@
 // =========================================================
-// 🎮 Vercel Controller - Version 48.0 (Answer-Required Quizzes + Word Doc Support)
-// Features: Detailed Admin Help | HTML Escaping | Spoiler Mode | Text-to-Quiz | Image-to-Quiz | Doc-to-Quiz | Broadcast
+// 🎮 Vercel Controller - Version 49.0 (/quizpdf Command Restored + Answer-Required Everywhere)
+// Features: Detailed Admin Help | HTML Escaping | Spoiler Mode | Text-to-Quiz | Image-to-Quiz | Doc-to-Quiz | Broadcast | Quiz-to-PDF
 //
-// 🩹 CHANGELOG vs 47.0:
-// 1) CHANGED (forwarded quizzes without an answer are now rejected): previously, a
-//    quiz poll with no correct_option_id (i.e. the bot isn't the poll's owner) fell
-//    back to an inline "pick the answer manually" keyboard. That flow is removed.
-//    Now the bot replies asking the user to resolve the quiz (mark the correct
-//    answer) and resend it with Telegram's "Hide My Name" forwarding option enabled
-//    — this makes the forwarded poll arrive as a fresh copy the bot owns, so
-//    correct_option_id is populated and the bot can recognize the answer itself.
-//    The old pending_polls/poll_answer_ manual-selection code path was removed since
-//    it's now unreachable.
-// 2) NEW: Word document (.docx / .doc) support. Files sent with mime type
-//    application/vnd.openxmlformats-officedocument.wordprocessingml.document or
-//    application/msword are now accepted the same way PDFs are — routed through the
-//    'analyze_async' GAS action (not the image pipeline), with the real mimeType
-//    forwarded so the backend calls Gemini with the correct document type instead of
-//    assuming PDF.
+// 🩹 CHANGELOG vs 48.0:
+// 1) FIX: /quizpdf was never actually implemented in this controller (the backend's
+//    'generate_quiz_pdf' GAS action existed and referenced "the controller's /quizpdf
+//    buffer" in its comments, but no command, buffer, or trigger for it existed here —
+//    so the bot silently ignored /quizpdf). This version adds the full flow:
+//      • /quizpdf starts a collection session (stored per-user in bot_config, same
+//        pattern as the /text buffer).
+//      • While a session is active, each *solved* quiz poll the user sends/forwards is
+//        appended to the session's buffer instead of just being echoed back, with a
+//        running count and "Generate PDF" / "Cancel" buttons.
+//      • Pressing "📄 إنشاء PDF" sends the collected quizzes to GAS's
+//        'generate_quiz_pdf' action, which builds and returns the review PDF.
+// 2) CHANGED (unsolved quizzes are rejected everywhere, including inside /quizpdf
+//    collection): the answer-required check from v48.0 now lives in one shared
+//    helper (quizPollToData) so an unsolved poll is refused the same way whether a
+//    /quizpdf session is active or not — it is never silently skipped or added to
+//    the PDF buffer without an answer.
 // =========================================================
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -40,6 +41,9 @@ if (global.isMaintenanceMode === undefined) global.isMaintenanceMode = false;
 
 // حد أقصى تقريبي لطول النص المجمّع قبل رفض استلام المزيد (يطابق حد GAS)
 const MAX_TEXT_BUFFER_LENGTH = 30000;
+
+// حد أقصى لعدد الأسئلة المجمّعة في جلسة /quizpdf الواحدة (حماية من حمولة ضخمة جداً)
+const MAX_QUIZPDF_BUFFER = 300;
 
 // ✨ [جديد] أنواع MIME الخاصة بمستندات Word المدعومة، تُعامل مثل PDF تماماً (تحليل مباشر
 // عبر analyze_async مع تمرير mimeType الحقيقي للـ backend بدل افتراض application/pdf).
@@ -145,6 +149,45 @@ async function setTextBuffer(userId, value) {
 }
 async function clearTextBuffer(userId) {
     await deleteBotConfig(`textbuf_${userId}`);
+}
+
+// --- إدارة مخزن جلسة "/quizpdf" (تجميع كويزات محلولة لتحويلها لملف PDF مراجعة) ---
+async function getQuizPdfBuffer(userId) {
+    return await getBotConfig(`quizpdfbuf_${userId}`);
+}
+async function setQuizPdfBuffer(userId, value) {
+    await setBotConfig(`quizpdfbuf_${userId}`, value);
+}
+async function clearQuizPdfBuffer(userId) {
+    await deleteBotConfig(`quizpdfbuf_${userId}`);
+}
+
+// ✨ يحوّل poll تيليجرام (type: quiz) لكائن quizData موحّد، مستخدَم في كل الأماكن
+// اللي بتتعامل مع كويزات (العرض العادي، تجميع /quizpdf، إلخ) عشان شرط "لازم يكون له
+// إجابة" يتطبق بنفس الطريقة في كل مكان ومفيش أي مسار بيتغاضى عنه بالغلط.
+function quizPollToData(poll) {
+    const quizData = {
+        question: poll.question,
+        options: poll.options.map(opt => opt.text),
+        correctOptionId: poll.correct_option_id,
+        explanation: poll.explanation || null
+    };
+    const hasAnswer = quizData.correctOptionId !== null && quizData.correctOptionId !== undefined && quizData.correctOptionId >= 0;
+    return { quizData, hasAnswer };
+}
+
+// ✨ الرسالة الموحّدة اللي بتتبعت لما يوصل كويز بدون إجابة واضحة، سواء في المسار
+// العادي أو أثناء تجميع /quizpdf — نفس الشرط ونفس التوجيه في كل مكان.
+async function sendUnsolvedQuizNotice(chatId, replyToMessageId) {
+    await bot.sendMessage(chatId,
+        `⚠️ <b>هذا الكويز غير محلول ولا يحتوي على إجابة واضحة.</b>\n\n` +
+        `البوت لا يستطيع التعرف على الإجابة الصحيحة إلا إذا وصله الكويز كنسخة يملكها هو نفسه.\n\n` +
+        `👉 يرجى:\n` +
+        `1️⃣ حل الكويز وتحديد الإجابة الصحيحة فيه.\n` +
+        `2️⃣ إعادة توجيهه (Forward) مع تفعيل خاصية <b>"إخفاء اسم المرسل / Hide My Name"</b>.\n` +
+        `3️⃣ إرساله للبوت مرة أخرى بهذه الطريقة.`,
+        { reply_to_message_id: replyToMessageId, parse_mode: 'HTML' }
+    );
 }
 
 async function upsertUser(user, alertIdSeen = null) {
@@ -378,7 +421,8 @@ module.exports = async (req, res) => {
             const welcomeText = welcomeCfg?.text ||
                 `مرحباً بك ${fromUser.first_name}! 👋\n\n` +
                 `📚 <b>أرسل لي ملف PDF أو Word أو صورة وسأقوم بتحليلها واستخراج الأسئلة منها.</b>\n\n` +
-                `📝 أو استخدم الأمر /text لتحويل نص (تكتبه أو تلصقه) إلى أسئلة مباشرة.`;
+                `📝 أو استخدم الأمر /text لتحويل نص (تكتبه أو تلصقه) إلى أسئلة مباشرة.\n\n` +
+                `📄 أو استخدم الأمر /quizpdf لتجميع كويزات محلولة (Quiz Polls) وتحويلها لملف PDF مراجعة.`;
             await bot.sendMessage(chatId, welcomeText, { parse_mode: 'HTML' });
             await checkAndSendAlert(chatId, fromUser);
             return res.status(200).send('Start');
@@ -403,6 +447,28 @@ module.exports = async (req, res) => {
                 }
             );
             return res.status(200).send('Text Mode Start');
+        }
+
+        // =========================================================
+        // 0.6️⃣ أمر /quizpdf - بدء جلسة تجميع كويزات محلولة لتحويلها لملف PDF مراجعة
+        // =========================================================
+        if (msg && msg.text && msg.text.startsWith('/quizpdf')) {
+            const chatId = msg.chat.id;
+
+            await clearQuizPdfBuffer(userId);
+            await setQuizPdfBuffer(userId, { active: true, quizzes: [], promptMsgId: null });
+
+            await bot.sendMessage(chatId,
+                `📄 <b>وضع تجميع الكويزات لملف PDF مراجعة</b>\n\n` +
+                `أرسل الآن الكويزات (Quiz Polls) <b>المحلولة</b> واحدة تلو الأخرى (يمكنك توجيهها/Forward).\n` +
+                `⚠️ أي كويز بدون إجابة محددة سيُرفض تلقائياً وسيُطلب منك حله وإعادة إرساله.\n\n` +
+                `عند الانتهاء اضغط "📄 إنشاء PDF".`,
+                {
+                    parse_mode: 'HTML',
+                    reply_markup: { inline_keyboard: [[{ text: '❌ إلغاء', callback_data: 'cmd_quizpdf_cancel' }]] }
+                }
+            );
+            return res.status(200).send('QuizPDF Mode Start');
         }
 
         // =========================================================
@@ -507,38 +573,65 @@ module.exports = async (req, res) => {
                 return res.status(200).send('OK');
             }
 
-            const quizData = {
-                question: poll.question,
-                options: poll.options.map(opt => opt.text),
-                correctOptionId: poll.correct_option_id,
-                explanation: poll.explanation || null
-            };
+            const { quizData, hasAnswer } = quizPollToData(poll);
 
-            // الحالة A: الكويز يحتوي على حل — يتم قبوله وعرضه مباشرة
-            if (quizData.correctOptionId !== null && quizData.correctOptionId >= 0) {
-                const formattedText = formatQuizText(quizData);
-                await bot.sendMessage(chatId, formattedText, {
-                    reply_to_message_id: msg.message_id,
-                    parse_mode: 'HTML'
-                });
+            // ✨ الكويز خام (بدون حل) — مرفوض دائماً بغض النظر عن وجود جلسة /quizpdf نشطة أو لا.
+            // بدل السماح للمستخدم يحدد الإجابة يدوياً (السلوك القديم)، البوت يطلب من المستخدم
+            // إعادة حل الكويز وإرساله مرة أخرى مع تفعيل خاصية "إخفاء اسم المرسل" عند التوجيه
+            // (Forward)، لأن هذا يجعل تيليجرام يرسل الكويز كنسخة جديدة يملكها البوت فعلياً،
+            // فتظهر correct_option_id تلقائياً ويقدر البوت يتعرف على الإجابة الصحيحة بنفسه.
+            if (!hasAnswer) {
+                await sendUnsolvedQuizNotice(chatId, msg.message_id);
+                return res.status(200).send('OK');
             }
-            // ✨ الحالة B: الكويز خام (بدون حل) — تم رفض قبول هذا النوع من الكويزات نهائياً.
-            // بدل السماح للمستخدم يحدد الإجابة يدوياً (السلوك القديم)، البوت الآن يطلب من
-            // المستخدم إعادة حل الكويز وإرساله مرة أخرى مع تفعيل خاصية "إخفاء اسم المرسل"
-            // عند التوجيه (Forward)، لأن هذا يجعل تيليجرام يرسل الكويز كنسخة جديدة يملكها
-            // البوت فعلياً، فتظهر correct_option_id تلقائياً ويقدر البوت يتعرف على الإجابة
-            // الصحيحة بنفسه دون تدخل يدوي.
-            else {
-                await bot.sendMessage(chatId,
-                    `⚠️ <b>هذا الكويز غير محلول ولا يحتوي على إجابة واضحة.</b>\n\n` +
-                    `البوت لا يستطيع التعرف على الإجابة الصحيحة إلا إذا وصله الكويز كنسخة يملكها هو نفسه.\n\n` +
-                    `👉 يرجى:\n` +
-                    `1️⃣ حل الكويز وتحديد الإجابة الصحيحة فيه.\n` +
-                    `2️⃣ إعادة توجيهه (Forward) مع تفعيل خاصية <b>"إخفاء اسم المرسل / Hide My Name"</b>.\n` +
-                    `3️⃣ إرساله للبوت مرة أخرى بهذه الطريقة.`,
-                    { reply_to_message_id: msg.message_id, parse_mode: 'HTML' }
+
+            // ✨ لو فيه جلسة /quizpdf نشطة، الكويز المحلول بينضاف لمخزن الجلسة بدل عرضه
+            // مباشرة — وهيتحول لملف PDF مراجعة لما المستخدم يضغط "📄 إنشاء PDF".
+            const qpdfBuffer = await getQuizPdfBuffer(userId);
+            if (qpdfBuffer && qpdfBuffer.active) {
+                if (qpdfBuffer.quizzes.length >= MAX_QUIZPDF_BUFFER) {
+                    await bot.sendMessage(chatId,
+                        `⚠️ وصلت للحد الأقصى لعدد الأسئلة في الجلسة (${MAX_QUIZPDF_BUFFER}). اضغط "📄 إنشاء PDF" الآن لإنشاء الملف مما تم تجميعه حتى الآن.`,
+                        { reply_markup: { inline_keyboard: [
+                            [{ text: '📄 إنشاء PDF', callback_data: 'cmd_quizpdf_done' }],
+                            [{ text: '❌ إلغاء', callback_data: 'cmd_quizpdf_cancel' }]
+                        ] } }
+                    );
+                    return res.status(200).send('QuizPDF Buffer Full');
+                }
+
+                qpdfBuffer.quizzes.push(quizData);
+
+                // إخفاء أزرار البرومبت السابق لتفادي تكرار الأزرار على الشاشة
+                if (qpdfBuffer.promptMsgId) {
+                    try {
+                        await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: qpdfBuffer.promptMsgId });
+                    } catch (e) { /* تجاهل لو الرسالة اتمسحت أو مالهاش أزرار */ }
+                }
+
+                const promptMsg = await bot.sendMessage(chatId,
+                    `✅ تم إضافة السؤال (الإجمالي: <b>${qpdfBuffer.quizzes.length}</b>).\n` +
+                    `أرسل المزيد أو اضغط "📄 إنشاء PDF" للإنتهاء.`,
+                    {
+                        parse_mode: 'HTML',
+                        reply_markup: { inline_keyboard: [
+                            [{ text: '📄 إنشاء PDF', callback_data: 'cmd_quizpdf_done' }],
+                            [{ text: '❌ إلغاء', callback_data: 'cmd_quizpdf_cancel' }]
+                        ] }
+                    }
                 );
+
+                qpdfBuffer.promptMsgId = promptMsg.message_id;
+                await setQuizPdfBuffer(userId, qpdfBuffer);
+                return res.status(200).send('QuizPDF Item Added');
             }
+
+            // مفيش جلسة /quizpdf نشطة — السلوك العادي: عرض الكويز المحلول مباشرة
+            const formattedText = formatQuizText(quizData);
+            await bot.sendMessage(chatId, formattedText, {
+                reply_to_message_id: msg.message_id,
+                parse_mode: 'HTML'
+            });
         }
 
         // =========================================================
@@ -637,6 +730,42 @@ module.exports = async (req, res) => {
                     userUsername: fromUser.username,
                     text: fullText,
                     logId: logId
+                });
+            }
+
+            // إلغاء جلسة تجميع /quizpdf
+            else if (data === 'cmd_quizpdf_cancel') {
+                await clearQuizPdfBuffer(userId);
+                await bot.answerCallbackQuery(cb.id, { text: '❌ تم الإلغاء.' });
+                await bot.editMessageText('❌ تم إلغاء عملية تجميع الكويزات.', { chat_id: chatId, message_id: messageId });
+            }
+
+            // إنهاء التجميع وطلب إنشاء ملف الـ PDF من GAS
+            else if (data === 'cmd_quizpdf_done') {
+                const qpdfBuffer = await getQuizPdfBuffer(userId);
+
+                if (!qpdfBuffer || !qpdfBuffer.active || !qpdfBuffer.quizzes || qpdfBuffer.quizzes.length === 0) {
+                    await bot.answerCallbackQuery(cb.id, { text: '⚠️ لا توجد أسئلة محفوظة.', show_alert: true });
+                    return res.status(200).send('OK');
+                }
+
+                const collectedQuizzes = qpdfBuffer.quizzes;
+                await clearQuizPdfBuffer(userId);
+
+                await bot.answerCallbackQuery(cb.id, { text: '🚀 جاري إنشاء الملف...' });
+                await bot.editMessageText(`⏳ <b>جاري إنشاء ملف PDF مراجعة يحتوي على ${collectedQuizzes.length} سؤال...</b>`, {
+                    chat_id: chatId, message_id: messageId, parse_mode: 'HTML'
+                });
+
+                const userName = `${fromUser.first_name} ${fromUser.last_name || ''}`.trim();
+
+                await sendToGasAndForget({
+                    action: 'generate_quiz_pdf',
+                    userId: userId,
+                    chatId: chatId,
+                    userName: userName,
+                    userUsername: fromUser.username,
+                    quizzes: collectedQuizzes
                 });
             }
 
