@@ -1,23 +1,20 @@
 // =========================================================
-// 🎮 Vercel Controller - Version 50.0 (Per-User Gemini API Keys)
+// 🎮 Vercel Controller - Version 51.0 (Unlimited Per-User Gemini API Keys)
 // Features: Detailed Admin Help | HTML Escaping | Spoiler Mode | Text-to-Quiz | Image-to-Quiz | Doc-to-Quiz | Broadcast | Quiz-to-PDF | User API Keys
 //
-// 🩹 CHANGELOG vs 49.0:
-// 1) NEW: /addkey — lets a user add their own Gemini API key. Shows bilingual
-//    (Arabic + English) step-by-step instructions with a direct link to
-//    https://aistudio.google.com/apikey, then waits for the next plain-text
-//    message and treats it as the key. The key is validated live against
-//    Gemini's models list endpoint BEFORE being saved (rejects typos/garbage
-//    immediately with the real reason from Google's API).
-// 2) NEW: /mykeys — lists the user's saved keys (masked, e.g. AIzaSy...ab12)
-//    with the date each was added.
-// 3) NEW: /removekey — shows the user's keys as buttons; tapping one deletes
-//    just that key (ownership-checked: a user can only delete their own).
-// 4) NEW: table `user_api_keys` (Supabase) stores keys per user_id. The GAS
-//    backend (v45.0+) reads this table and tries a user's own keys before
-//    the shared/public pool, which is the whole point: fewer "server busy"
-//    messages for users who add their own free key.
-// 5) A user can add up to MAX_USER_KEYS_PER_USER keys (default 5).
+// 🩹 CHANGELOG vs 50.0:
+// 1) REMOVED: the MAX_USER_KEYS_PER_USER cap (previously 5). Users can now add
+//    an unlimited number of their own Gemini API keys via /addkey. All limit
+//    checks in /addkey, the key-save flow, and /mykeys were removed.
+// 2) REMOVED: the client-side regex format check on pasted keys
+//    (/^[A-Za-z0-9_\-]{20,80}$/). Whatever the user pastes is now sent
+//    straight to validateGeminiApiKey() (a live call against Google's
+//    ListModels endpoint) instead of being pre-filtered locally. If it's
+//    garbage, the real rejection reason from Google is shown to the user.
+// 3) UPDATED: /addkey instructions now tell the user that each key they add
+//    gives the bot roughly ~20 extra file/text/image analyses per day that
+//    are reliably theirs (their own free-tier quota), on top of the shared
+//    pool.
 // =========================================================
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -44,8 +41,12 @@ const MAX_TEXT_BUFFER_LENGTH = 30000;
 // حد أقصى لعدد الأسئلة المجمّعة في جلسة /quizpdf الواحدة (حماية من حمولة ضخمة جداً)
 const MAX_QUIZPDF_BUFFER = 300;
 
-// ✨ [جديد v50.0] حد أقصى لعدد مفاتيح API التي يمكن للمستخدم الواحد إضافتها
-const MAX_USER_KEYS_PER_USER = 5;
+// ✨ [45.0] عدد التحليلات التقريبي الإضافي اليومي اللي بيوفره كل مفتاح مستخدم يضيفه
+// (يُستخدم فقط في رسالة /addkey التوضيحية، مش قيد فعلي بيتفرض في الكود).
+const APPROX_ANALYSES_PER_KEY = 20;
+
+// ⚠️ [51.0] تم حذف MAX_USER_KEYS_PER_USER بالكامل — لا يوجد حد أقصى لعدد المفاتيح
+// التي يمكن للمستخدم إضافتها بعد الآن.
 
 // ✨ [جديد] أنواع MIME الخاصة بمستندات Word المدعومة، تُعامل مثل PDF تماماً (تحليل مباشر
 // عبر analyze_async مع تمرير mimeType الحقيقي للـ backend بدل افتراض application/pdf).
@@ -108,7 +109,7 @@ function smartJoinParts(parts) {
     return result;
 }
 
-// ✨ [جديد v50.0] يخفي معظم مفتاح الـ API ولا يعرض إلا أول 6 وآخر 4 خانات، عشان
+// ✨ يخفي معظم مفتاح الـ API ولا يعرض إلا أول 6 وآخر 4 خانات، عشان
 // المستخدم يقدر يميّز مفاتيحه من بعض من غير ما نعرض المفتاح كامل في الشات.
 function maskApiKey(key) {
     if (!key || key.length < 10) return '****';
@@ -182,7 +183,7 @@ async function clearAddKeyState(userId) {
     await deleteBotConfig(`addkeybuf_${userId}`);
 }
 
-// ✨ [جديد v50.0] مفاتيح API الخاصة بالمستخدمين (جدول user_api_keys منفصل عن bot_config)
+// ✨ مفاتيح API الخاصة بالمستخدمين (جدول user_api_keys منفصل عن bot_config)
 async function getUserApiKeysList(userId) {
     if (!SUPABASE_URL || !SUPABASE_KEY) return [];
     try {
@@ -221,8 +222,10 @@ async function removeUserApiKeyFromDb(id, userId) {
     } catch (e) { console.error("❌ RemoveUserKey Error:", e.message); return false; }
 }
 
-// ✨ [جديد v50.0] يتحقق من صلاحية مفتاح Gemini API فعلياً قبل حفظه، عن طريق نداء
+// ✨ يتحقق من صلاحية مفتاح Gemini API فعلياً قبل حفظه، عن طريق نداء
 // خفيف لـ ListModels (لا يستهلك أي كوتا توليد نصوص، فقط يتأكد إن المفتاح مقبول).
+// ⚠️ [51.0] هذه الآن نقطة التحقق الوحيدة من صحة المفتاح — لا يوجد أي فلترة شكلية
+// (regex) قبلها؛ أي نص يلصقه المستخدم يُمرَّر مباشرة هنا.
 async function validateGeminiApiKey(apiKey) {
     try {
         const res = await axios.get(
@@ -417,7 +420,7 @@ module.exports = async (req, res) => {
 
                                 `🔑 <b>مفاتيح API (مستخدمين):</b>\n` +
                                 `• <code>/mykeys</code>, <code>/addkey</code>, <code>/removekey</code>\n` +
-                                ` نفس أوامر المستخدم العادي، تعمل للأدمن أيضاً على مفاتيحه الخاصة.`;
+                                ` نفس أوامر المستخدم العادي، تعمل للأدمن أيضاً على مفاتيحه الخاصة. لا يوجد حد أقصى لعدد المفاتيح.`;
 
                 await bot.sendMessage(userId, helpMsg, { parse_mode: 'HTML' });
                 return res.status(200).send('Help');
@@ -457,7 +460,7 @@ module.exports = async (req, res) => {
                 return res.status(200).send('Alert Set');
             }
 
-            // ✨ [جديد] /broadcast - معاينة ثم تأكيد قبل الإرسال الفعلي لكل المستخدمين
+            // ✨ /broadcast - معاينة ثم تأكيد قبل الإرسال الفعلي لكل المستخدمين
             if (text.startsWith('/broadcast ')) {
                 const broadcastText = text.replace('/broadcast ', '').trim();
 
@@ -504,7 +507,7 @@ module.exports = async (req, res) => {
                 `📚 <b>أرسل لي ملف PDF أو Word أو صورة وسأقوم بتحليلها واستخراج الأسئلة منها.</b>\n\n` +
                 `📝 أو استخدم الأمر /text لتحويل نص (تكتبه أو تلصقه) إلى أسئلة مباشرة.\n\n` +
                 `📄 أو استخدم الأمر /quizpdf لتجميع كويزات محلولة (Quiz Polls) وتحويلها لملف PDF مراجعة.\n\n` +
-                `🔑 <b>جديد:</b> أضف مفتاح Gemini API الخاص بك (مجاني) عبر /addkey ليستخدمه البوت أولاً ويقلل رسائل "السيرفر مشغول"! استخدم /mykeys لعرض مفاتيحك و /removekey لحذفها.`;
+                `🔑 <b>جديد:</b> أضف مفتاح Gemini API الخاص بك (مجاني) عبر /addkey ليستخدمه البوت أولاً ويقلل رسائل "السيرفر مشغول"! كل مفتاح يمنحك ما يقارب ${APPROX_ANALYSES_PER_KEY} تحليل إضافي يومياً، ويمكنك إضافة أي عدد من المفاتيح. استخدم /mykeys لعرض مفاتيحك و /removekey لحذفها.`;
             await bot.sendMessage(chatId, welcomeText, { parse_mode: 'HTML' });
             await checkAndSendAlert(chatId, fromUser);
             return res.status(200).send('Start');
@@ -554,21 +557,11 @@ module.exports = async (req, res) => {
         }
 
         // =========================================================
-        // 0.7️⃣ أمر /addkey - بدء إضافة مفتاح Gemini API الخاص بالمستخدم [جديد v50.0]
+        // 0.7️⃣ أمر /addkey - بدء إضافة مفتاح Gemini API الخاص بالمستخدم
+        //       ⚠️ [51.0] لا يوجد أي حد أقصى لعدد المفاتيح بعد الآن.
         // =========================================================
         if (msg && msg.text && msg.text.startsWith('/addkey')) {
             const chatId = msg.chat.id;
-
-            const existingKeys = await getUserApiKeysList(userId);
-            if (existingKeys.length >= MAX_USER_KEYS_PER_USER) {
-                await bot.sendMessage(chatId,
-                    `⚠️ لقد وصلت للحد الأقصى لعدد المفاتيح (${MAX_USER_KEYS_PER_USER}).\n` +
-                    `استخدم /mykeys لعرض مفاتيحك أو /removekey لحذف أحدها أولاً.\n\n` +
-                    `⚠️ You've reached the maximum number of keys (${MAX_USER_KEYS_PER_USER}).\n` +
-                    `Use /mykeys to view your keys or /removekey to remove one first.`
-                );
-                return res.status(200).send('Max Keys');
-            }
 
             await setAddKeyState(userId, { active: true });
 
@@ -576,6 +569,8 @@ module.exports = async (req, res) => {
 `🔑 <b>أضف مفتاح Gemini API الخاص بك (مجاني)</b>
 
 سيستخدم البوت مفتاحك الخاص أولاً قبل المفاتيح العامة المشتركة، مما يقلل رسائل "السيرفر مشغول" بشكل كبير 🚀
+
+📈 كل مفتاح جديد تضيفه يمنحك تقريباً <b>${APPROX_ANALYSES_PER_KEY} تحليل ملف/نص/صورة إضافي يومياً</b> شبه مضمون، فوق المفاتيح المشتركة. ويمكنك إضافة أي عدد تريده من المفاتيح لزيادة هذا الرصيد أكثر.
 
 <b>خطوات الحصول على المفتاح:</b>
 1️⃣ افتح الرابط: https://aistudio.google.com/apikey
@@ -589,13 +584,15 @@ module.exports = async (req, res) => {
 • المفتاح مجاني بالكامل ضمن الحد اليومي المجاني (Free Tier) من Google.
 • لا تشارك هذا المفتاح مع أي شخص آخر أبداً — فهو يتيح استخدام حصتك في Google AI Studio.
 • يمكنك حذفه أو إلغاءه في أي وقت من نفس صفحة aistudio.google.com/apikey، أو من هنا عبر /removekey.
-• سنتحقق من صلاحية المفتاح قبل حفظه مباشرة.
+• سنتحقق من صلاحية المفتاح مباشرة عن طريق تجربته فعلياً قبل حفظه.
 
 ━━━━━━━━━━━━━━━━━━
 
 🔑 <b>Add your own Gemini API key (it's free)</b>
 
 The bot will try your own key first before the shared/public ones — this greatly reduces "server busy" messages 🚀
+
+📈 Each key you add gives you roughly <b>${APPROX_ANALYSES_PER_KEY} extra file/text/image analyses per day</b> that are reliably yours, on top of the shared pool. You can add as many keys as you like to increase this further.
 
 <b>Steps to get your key:</b>
 1️⃣ Open: https://aistudio.google.com/apikey
@@ -609,7 +606,7 @@ The bot will try your own key first before the shared/public ones — this great
 • The key is completely free within Google's daily free tier.
 • Never share this key with anyone — it grants access to your own Google AI Studio quota.
 • You can revoke it anytime from aistudio.google.com/apikey, or remove it here via /removekey.
-• We'll validate the key with Google before saving it.
+• We'll validate the key by actually testing it live with Google before saving it.
 
 📩 <b>الآن، الصق مفتاحك هنا / Now paste your key here:</b>`;
 
@@ -622,7 +619,7 @@ The bot will try your own key first before the shared/public ones — this great
         }
 
         // =========================================================
-        // 0.8️⃣ أمر /mykeys - عرض مفاتيح المستخدم الحالية [جديد v50.0]
+        // 0.8️⃣ أمر /mykeys - عرض مفاتيح المستخدم الحالية
         // =========================================================
         if (msg && msg.text && msg.text.startsWith('/mykeys')) {
             const chatId = msg.chat.id;
@@ -642,15 +639,16 @@ The bot will try your own key first before the shared/public ones — this great
             }).join('\n');
 
             await bot.sendMessage(chatId,
-                `🔑 <b>مفاتيحك المضافة (${keys.length}/${MAX_USER_KEYS_PER_USER}):</b>\n\n${list}\n\n` +
-                `➕ /addkey لإضافة مفتاح جديد\n🗑 /removekey لحذف مفتاح`,
+                `🔑 <b>مفاتيحك المضافة (${keys.length}):</b>\n\n${list}\n\n` +
+                `📈 كل مفتاح يمنحك ~${APPROX_ANALYSES_PER_KEY} تحليل إضافي يومياً.\n\n` +
+                `➕ /addkey لإضافة مفتاح جديد (بدون حد أقصى)\n🗑 /removekey لحذف مفتاح`,
                 { parse_mode: 'HTML' }
             );
             return res.status(200).send('My Keys');
         }
 
         // =========================================================
-        // 0.9️⃣ أمر /removekey - حذف أحد مفاتيح المستخدم [جديد v50.0]
+        // 0.9️⃣ أمر /removekey - حذف أحد مفاتيح المستخدم
         // =========================================================
         if (msg && msg.text && msg.text.startsWith('/removekey')) {
             const chatId = msg.chat.id;
@@ -708,7 +706,7 @@ The bot will try your own key first before the shared/public ones — this great
                 // ✨ sourceType: 'document' — الملف اتبعت كـ Document بغض النظر عن كونه PDF أو Word أو صورة،
                 // فـ GAS يعرف يستخدم sendDocument للإشعار الإداري بدون مشاكل توافق.
                 // ✨ mimeType الحقيقي (application/pdf أو docx/doc) بيتبعت لـ GAS، وimages بتاخد مساره الخاص أصلاً.
-                // ✨ userId موجود بالفعل ضمن الـ payload — GAS (v45.0+) بيستخدمه عشان يجرب مفاتيح المستخدم أولاً.
+                // ✨ userId موجود بالفعل ضمن الـ payload — GAS بيستخدمه عشان يجرب مفاتيح المستخدم أولاً.
                 await sendToGasAndForget({
                     action: isImage ? 'analyze_image_async' : 'analyze_async',
                     fileUrl: fileLink, chatId: chatId, messageId: waitMsg.message_id,
@@ -836,26 +834,19 @@ The bot will try your own key first before the shared/public ones — this great
         }
 
         // =========================================================
-        // 2.5️⃣ استقبال أجزاء النص (وضع تحويل النص إلى أسئلة) أو مفتاح API [محدّث v50.0]
+        // 2.5️⃣ استقبال أجزاء النص (وضع تحويل النص إلى أسئلة) أو مفتاح API
+        //       ⚠️ [51.0] لا يوجد فحص شكلي (regex) على المفتاح بعد الآن — يُمرَّر
+        //       أي نص يلصقه المستخدم مباشرة لـ validateGeminiApiKey().
         // =========================================================
         else if (msg && msg.text && !msg.text.startsWith('/')) {
             const chatId = msg.chat.id;
 
-            // ✨ [جديد v50.0] أولوية لوضع إضافة مفتاح API الشخصي، لو نشط — يُفحص قبل أي
+            // ✨ أولوية لوضع إضافة مفتاح API الشخصي، لو نشط — يُفحص قبل أي
             // وضع آخر لأن المستخدم غالباً سيلصق المفتاح كرسالة نصية واحدة فقط.
             const addKeyState = await getAddKeyState(userId);
             if (addKeyState && addKeyState.active) {
                 const candidateKey = msg.text.trim();
                 await clearAddKeyState(userId);
-
-                // تحقق أولي سريع من الشكل العام لمفتاح Gemini قبل عمل نداء شبكة له
-                if (!/^[A-Za-z0-9_\-]{20,80}$/.test(candidateKey)) {
-                    await bot.sendMessage(chatId,
-                        `❌ هذا لا يبدو كمفتاح API صالح (تأكد من نسخه كاملاً بدون مسافات). حاول مرة أخرى باستخدام /addkey.\n\n` +
-                        `❌ This doesn't look like a valid API key (make sure you copied it fully with no spaces). Try again with /addkey.`
-                    );
-                    return res.status(200).send('Invalid Key Format');
-                }
 
                 const waitMsg = await bot.sendMessage(chatId, '⏳ جاري التحقق من المفتاح... / Validating your key...');
 
@@ -868,14 +859,9 @@ The bot will try your own key first before the shared/public ones — this great
                     );
                     return res.status(200).send('Duplicate Key');
                 }
-                if (existingKeys.length >= MAX_USER_KEYS_PER_USER) {
-                    await bot.editMessageText(
-                        `⚠️ وصلت للحد الأقصى (${MAX_USER_KEYS_PER_USER} مفاتيح).\n⚠️ You've reached the max limit (${MAX_USER_KEYS_PER_USER} keys).`,
-                        { chat_id: chatId, message_id: waitMsg.message_id }
-                    );
-                    return res.status(200).send('Max Keys');
-                }
 
+                // ⚠️ [51.0] لا يوجد حد أقصى لعدد المفاتيح، ولا فحص شكل مسبق — ننتقل
+                // مباشرة لاختبار المفتاح فعلياً عبر Google API.
                 const validation = await validateGeminiApiKey(candidateKey);
 
                 if (!validation.valid) {
@@ -901,9 +887,9 @@ The bot will try your own key first before the shared/public ones — this great
                 const newCount = existingKeys.length + 1;
                 await bot.editMessageText(
                     `✅ <b>تم إضافة مفتاحك بنجاح!</b> (<code>${maskApiKey(candidateKey)}</code>)\n` +
-                    `سيستخدمه البوت أولاً قبل المفاتيح العامة. لديك الآن ${newCount}/${MAX_USER_KEYS_PER_USER} مفاتيح.\n\n` +
+                    `سيستخدمه البوت أولاً قبل المفاتيح العامة. لديك الآن ${newCount} مفاتيح، بما يقارب ${newCount * APPROX_ANALYSES_PER_KEY} تحليل إضافي يومياً.\n\n` +
                     `✅ <b>Key added successfully!</b> (<code>${maskApiKey(candidateKey)}</code>)\n` +
-                    `The bot will use it first, before the public keys. You now have ${newCount}/${MAX_USER_KEYS_PER_USER} keys.`,
+                    `The bot will use it first, before the public keys. You now have ${newCount} keys, roughly ${newCount * APPROX_ANALYSES_PER_KEY} extra analyses/day.`,
                     { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'HTML' }
                 );
                 return res.status(200).send('Key Added');
@@ -1039,20 +1025,20 @@ The bot will try your own key first before the shared/public ones — this great
                 });
             }
 
-            // ✨ [جديد v50.0] إلغاء وضع إضافة مفتاح API
+            // ✨ إلغاء وضع إضافة مفتاح API
             else if (data === 'cmd_addkey_cancel') {
                 await clearAddKeyState(userId);
                 await bot.answerCallbackQuery(cb.id, { text: '❌ تم الإلغاء.' });
                 await bot.editMessageText('❌ تم إلغاء إضافة المفتاح.\n❌ Cancelled adding the key.', { chat_id: chatId, message_id: messageId });
             }
 
-            // ✨ [جديد v50.0] إلغاء عملية حذف المفتاح
+            // ✨ إلغاء عملية حذف المفتاح
             else if (data === 'cmd_removekey_cancel') {
                 await bot.answerCallbackQuery(cb.id, { text: '❌ تم الإلغاء.' });
                 await bot.editMessageText('❌ تم الإلغاء.\n❌ Cancelled.', { chat_id: chatId, message_id: messageId });
             }
 
-            // ✨ [جديد v50.0] حذف مفتاح محدد (مع التحقق من الملكية عبر user_id في الاستعلام)
+            // ✨ حذف مفتاح محدد (مع التحقق من الملكية عبر user_id في الاستعلام)
             else if (data.startsWith('cmd_removekey_')) {
                 const keyId = data.replace('cmd_removekey_', '');
                 const removed = await removeUserApiKeyFromDb(keyId, userId);
@@ -1099,7 +1085,7 @@ The bot will try your own key first before the shared/public ones — this great
                 }
             }
 
-            // ✨ [جديد] تأكيد إرسال البرودكاست
+            // ✨ تأكيد إرسال البرودكاست
             else if (data === 'cmd_broadcast_confirm') {
                 if (userId !== ADMIN_CHAT_ID) { await bot.answerCallbackQuery(cb.id); return res.status(200).send('OK'); }
 
@@ -1123,7 +1109,7 @@ The bot will try your own key first before the shared/public ones — this great
                 });
             }
 
-            // ✨ [جديد] إلغاء البرودكاست
+            // ✨ إلغاء البرودكاست
             else if (data === 'cmd_broadcast_cancel') {
                 if (userId !== ADMIN_CHAT_ID) { await bot.answerCallbackQuery(cb.id); return res.status(200).send('OK'); }
 
