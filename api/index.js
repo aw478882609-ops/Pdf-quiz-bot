@@ -1,39 +1,37 @@
 // =========================================================
-// 🎮 Vercel Controller - Version 52.0 (File Mode Selection: Extract vs AI-Generate)
-// Features: Detailed Admin Help | HTML Escaping | Spoiler Mode | Text-to-Quiz | Image-to-Quiz | Doc-to-Quiz | Broadcast | Quiz-to-PDF | User API Keys | Extract/Generate Mode Picker
+// 🎮 Vercel Controller - Version 53.0 (Persisted Maintenance Mode + Ban System + Min-Keys-for-Generate)
+// Features: Detailed Admin Help | HTML Escaping | Spoiler Mode | Text-to-Quiz | Image-to-Quiz | Doc-to-Quiz | Broadcast | Quiz-to-PDF | User API Keys | Extract/Generate Mode Picker | Ban System
 //
-// 🩹 CHANGELOG vs 51.0:
-// 1) NEW: When a user sends a file or photo, the bot no longer analyzes it
-//    immediately. It first asks the user to choose between two modes via
-//    inline buttons:
-//      📤 "Extract existing questions"  -> old behaviour (mode: 'extract').
-//      🤖 "Generate questions with AI"  -> new behaviour (mode: 'generate').
-// 2) NEW ("extract" branch): after choosing extract mode, the user is asked
-//    whether the bot should also detect section/chapter titles
-//    (extractTitles: true/false), exactly like the old default behaviour
-//    (previously this was always on).
-// 3) NEW ("generate" branch): before anything else, the bot checks whether
-//    the user has at least one of their OWN Gemini API keys saved (via
-//    /addkey). If not, the flow stops and the user is told to add a key
-//    first — generation is never attempted with shared/public keys.
-//    If the user does have keys, the bot asks:
-//      a) How many questions to generate (preset buttons 5/10/15/20/30,
-//         or a custom number typed in, clamped 1-50).
-//      b) Optional custom instructions/prompt (or "تخطي"/"skip" to omit).
-//    These are forwarded to GAS as `questionCount` and `customPrompt`,
-//    together with `mode: 'generate'`. GAS is responsible for using only
-//    the user's personal keys and for asking Gemini to both invent the
-//    questions AND determine their correct answers from the file's content.
-// 4) NEW helpers: getPendingFile/setPendingFile/clearPendingFile (state
-//    machine for the file stored in bot_config under `pendingfile_<id>`,
-//    the same pattern already used for text/quizpdf/addkey buffers) and
-//    startFileAnalysis() (the actual "download file link + notify GAS"
-//    step, now shared by both the extract and generate paths and triggered
-//    only once all the needed choices have been collected).
-// 5) The document/photo message handlers were simplified: they now only
-//    validate the incoming file, stash its metadata in the pending-file
-//    state, and show the mode-picker keyboard. All actual GAS dispatch
-//    logic lives in startFileAnalysis().
+// 🩹 CHANGELOG vs 52.0:
+// 1) FIXED: Maintenance mode ("وضع الصيانة") used to live in an in-memory
+//    `global.isMaintenanceMode` variable. On Vercel this is NOT reliable:
+//    serverless functions can spin up fresh instances at any time (cold
+//    starts, scale-out, redeploys), each with its OWN copy of `global`, so
+//    /repairon in one instance would silently NOT apply to requests handled
+//    by another instance — regular users could keep using the bot even
+//    though the admin had "turned on" maintenance mode. Maintenance mode is
+//    now persisted in Supabase (bot_config key `maintenance_mode`) via new
+//    getMaintenanceMode()/setMaintenanceMode() helpers, and is read fresh on
+//    every single request — so it now reliably blocks all non-admin users
+//    everywhere, on every instance, immediately after /repairon.
+// 2) NEW: /ban <user_id> — admin-only command to fully block a user (by
+//    Telegram user id) from using the bot. Banned users get a polite
+//    "you are banned" notice on any message or button tap; every other flow
+//    (file/photo/text/poll/keys/etc.) is short-circuited before it runs.
+// 3) NEW: /unban <user_id> — removes a user from the ban list.
+// 4) NEW: /banlist — lists all currently banned user ids.
+//    Ban state is persisted the same way as maintenance mode: Supabase
+//    bot_config key `banned_users` holding an array of id strings, via new
+//    getBannedUsers()/setBannedUsers()/isUserBanned() helpers.
+// 5) NEW: MIN_USER_KEYS_FOR_GENERATE = 2 — the "🤖 إنشاء أسئلة بالذكاء
+//    الاصطناعي" (AI-generate) mode now requires the user to have AT LEAST 2
+//    of their own active Gemini API keys saved (previously just 1 was
+//    enough). The cmd_filemode_generate callback now checks
+//    userKeys.length < MIN_USER_KEYS_FOR_GENERATE and, if the user falls
+//    short, tells them exactly how many keys they currently have vs how many
+//    are required, and points them to /addkey.
+// 6) /adminhelp updated to document /ban, /unban, /banlist, and to clarify
+//    the 2-key minimum for AI-generation.
 // =========================================================
 
 const TelegramBot = require('node-telegram-bot-api');
@@ -51,8 +49,12 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
 // 🧠 الذاكرة المؤقتة
+// ⚠️ [53.0] ملاحظة مهمة: global.* غير موثوق فيه في بيئة Vercel Serverless، لأن كل
+// استدعاء (invocation) ممكن يشتغل على instance مختلفة/جديدة تماماً بدون أي تحذير
+// (Cold Start / Scale-out / إعادة نشر). لذلك تم نقل حالة "وضع الصيانة" وحالة
+// "المستخدمين المحظورين" بالكامل لتخزين دائم وموثوق في Supabase (راجع
+// getMaintenanceMode/setMaintenanceMode و getBannedUsers/setBannedUsers أسفل).
 if (!global.userState) global.userState = {};
-if (global.isMaintenanceMode === undefined) global.isMaintenanceMode = false;
 
 // حد أقصى تقريبي لطول النص المجمّع قبل رفض استلام المزيد (يطابق حد GAS)
 const MAX_TEXT_BUFFER_LENGTH = 30000;
@@ -72,6 +74,11 @@ const APPROX_ANALYSES_PER_KEY = 20;
 const MIN_GENERATE_COUNT = 1;
 const MAX_GENERATE_COUNT = 50;
 const DEFAULT_GENERATE_COUNT = 10;
+
+// ✨ [53.0] الحد الأدنى لعدد مفاتيح Gemini الخاصة بالمستخدم اللازمة قبل السماح له
+// باستخدام ميزة "إنشاء أسئلة بالذكاء الاصطناعي" (generate mode). كان 1 مفتاح كافياً
+// سابقاً، وأصبح الآن يتطلب مفتاحين على الأقل.
+const MIN_USER_KEYS_FOR_GENERATE = 2;
 
 // ✨ [جديد] أنواع MIME الخاصة بمستندات Word المدعومة، تُعامل مثل PDF تماماً (تحليل مباشر
 // عبر analyze_async مع تمرير mimeType الحقيقي للـ backend بدل افتراض application/pdf).
@@ -219,6 +226,30 @@ async function setPendingFile(userId, value) {
 }
 async function clearPendingFile(userId) {
     await deleteBotConfig(`pendingfile_${userId}`);
+}
+
+// ✨ [53.0] إدارة وضع الصيانة — مخزّن بشكل دائم في Supabase (bot_config) بدل متغير
+// عام (global.*) غير موثوق فيه على Vercel Serverless. يُقرأ من جديد على كل طلب.
+async function getMaintenanceMode() {
+    const cfg = await getBotConfig('maintenance_mode');
+    return !!(cfg && cfg.enabled);
+}
+async function setMaintenanceMode(enabled) {
+    await setBotConfig('maintenance_mode', { enabled: !!enabled });
+}
+
+// ✨ [53.0] إدارة قائمة المستخدمين المحظورين — نفس منطق التخزين الدائم أعلاه.
+// القيمة المخزّنة: { ids: ["123456789", "987654321", ...] } (مصفوفة نصوص).
+async function getBannedUsers() {
+    const cfg = await getBotConfig('banned_users');
+    return (cfg && Array.isArray(cfg.ids)) ? cfg.ids : [];
+}
+async function setBannedUsers(ids) {
+    await setBotConfig('banned_users', { ids });
+}
+async function isUserBanned(userId) {
+    const banned = await getBannedUsers();
+    return banned.indexOf(String(userId)) !== -1;
 }
 
 // ✨ مفاتيح API الخاصة بالمستخدمين (جدول user_api_keys منفصل عن bot_config)
@@ -447,7 +478,7 @@ async function startFileAnalysis(userId, fromUser, chatId, messageId, pending) {
         // sendDocument/sendPhoto الصح للإشعار الإداري.
         // ✨ mode/extractTitles/customPrompt/questionCount بيوصلوا لـ GAS اللي بيقرر
         // بناءً عليهم يستخدم مفاتيح المستخدم فقط (وضع generate) أو المفاتيح العامة
-        // كمان (وضع extract)، وبيبني البرومبت المناسب.
+        // فقط (وضع extract)، وبيبني البرومبت المناسب.
         const payload = {
             action: isImage ? 'analyze_image_async' : 'analyze_async',
             fileUrl: fileLink, chatId: chatId, messageId: messageId,
@@ -513,15 +544,25 @@ module.exports = async (req, res) => {
                                 ` لإرسال رسالة فورية لجميع المستخدمين المسجلين (بعد معاينة وتأكيد).\n\n` +
 
                                 `🔧 <b>وضع الصيانة:</b>\n` +
-                                `• <code>/repairon</code> : لتفعيل الصيانة.\n` +
+                                `• <code>/repairon</code> : لتفعيل الصيانة (يمنع كل المستخدمين عدا الأدمن من استخدام البوت فوراً وعلى كل السيرفرات).\n` +
                                 `• <code>/repairoff</code> : لإيقاف الصيانة.\n\n` +
+
+                                `🚫 <b>حظر المستخدمين:</b>\n` +
+                                `• <code>/ban USER_ID</code>\n` +
+                                ` مثال: <code>/ban 123456789</code>\n` +
+                                ` لحظر مستخدم بالكامل من استخدام البوت.\n\n` +
+                                `• <code>/unban USER_ID</code>\n` +
+                                ` لرفع الحظر عن مستخدم.\n\n` +
+                                `• <code>/banlist</code>\n` +
+                                ` لعرض قائمة كل المستخدمين المحظورين حالياً.\n\n` +
 
                                 `🔑 <b>مفاتيح API (مستخدمين):</b>\n` +
                                 `• <code>/mykeys</code>, <code>/addkey</code>, <code>/removekey</code>\n` +
                                 ` نفس أوامر المستخدم العادي، تعمل للأدمن أيضاً على مفاتيحه الخاصة. لا يوجد حد أقصى لعدد المفاتيح.\n\n` +
 
                                 `📄 <b>عند إرسال ملف/صورة:</b>\n` +
-                                ` سيُعرض عليك اختيار "استخراج أسئلة موجودة" أو "إنشاء أسئلة بالذكاء الاصطناعي" (تتطلب مفتاحك الخاص).`;
+                                ` سيُعرض عليك اختيار "استخراج أسئلة موجودة" (يستخدم مفاتيح البوت العامة) أو "إنشاء أسئلة بالذكاء الاصطناعي" ` +
+                                ` (يتطلب ${MIN_USER_KEYS_FOR_GENERATE} مفاتيح Gemini خاصة بك على الأقل).`;
 
                 await bot.sendMessage(userId, helpMsg, { parse_mode: 'HTML' });
                 return res.status(200).send('Help');
@@ -586,12 +627,89 @@ module.exports = async (req, res) => {
                 return res.status(200).send('Broadcast Preview');
             }
 
-            if (text === '/repairon') { global.isMaintenanceMode = true; await bot.sendMessage(ADMIN_CHAT_ID, '🛠️ ON'); return res.status(200).send('ON'); }
-            if (text === '/repairoff') { global.isMaintenanceMode = false; await bot.sendMessage(ADMIN_CHAT_ID, '✅ OFF'); return res.status(200).send('OFF'); }
+            // ✨ [53.0] وضع الصيانة الآن مخزَّن بشكل دائم في Supabase عبر setMaintenanceMode()
+            // بدل global.isMaintenanceMode، فبيتطبق فوراً على كل الطلبات القادمة مهما
+            // كان عددها من instances على Vercel.
+            if (text === '/repairon') {
+                await setMaintenanceMode(true);
+                await bot.sendMessage(ADMIN_CHAT_ID, '🛠️ <b>تم تفعيل وضع الصيانة.</b>\nكل المستخدمين (عدا الأدمن) لن يتمكنوا من استخدام البوت الآن.', { parse_mode: 'HTML' });
+                return res.status(200).send('ON');
+            }
+            if (text === '/repairoff') {
+                await setMaintenanceMode(false);
+                await bot.sendMessage(ADMIN_CHAT_ID, '✅ <b>تم إيقاف وضع الصيانة.</b>\nالبوت يعمل الآن بشكل طبيعي لجميع المستخدمين.', { parse_mode: 'HTML' });
+                return res.status(200).send('OFF');
+            }
+
+            // ✨ [53.0] حظر مستخدم من استخدام البوت بالكامل عبر الآيدي
+            if (text.startsWith('/ban ')) {
+                const targetId = text.replace('/ban ', '').trim();
+                if (!targetId || !/^\d+$/.test(targetId)) {
+                    await bot.sendMessage(userId, '⚠️ استخدم: <code>/ban USER_ID</code>\nمثال: <code>/ban 123456789</code>', { parse_mode: 'HTML' });
+                    return res.status(200).send('Ban Usage');
+                }
+                if (targetId === ADMIN_CHAT_ID) {
+                    await bot.sendMessage(userId, '⚠️ لا يمكنك حظر نفسك (الأدمن).');
+                    return res.status(200).send('Cannot Ban Admin');
+                }
+                const banned = await getBannedUsers();
+                if (banned.indexOf(targetId) !== -1) {
+                    await bot.sendMessage(userId, `⚠️ المستخدم <code>${targetId}</code> محظور بالفعل.`, { parse_mode: 'HTML' });
+                } else {
+                    banned.push(targetId);
+                    await setBannedUsers(banned);
+                    await bot.sendMessage(userId, `✅ تم حظر المستخدم <code>${targetId}</code> من استخدام البوت.`, { parse_mode: 'HTML' });
+                }
+                return res.status(200).send('Banned');
+            }
+
+            // ✨ [53.0] رفع الحظر عن مستخدم عبر الآيدي
+            if (text.startsWith('/unban ')) {
+                const targetId = text.replace('/unban ', '').trim();
+                if (!targetId || !/^\d+$/.test(targetId)) {
+                    await bot.sendMessage(userId, '⚠️ استخدم: <code>/unban USER_ID</code>\nمثال: <code>/unban 123456789</code>', { parse_mode: 'HTML' });
+                    return res.status(200).send('Unban Usage');
+                }
+                let banned = await getBannedUsers();
+                if (banned.indexOf(targetId) === -1) {
+                    await bot.sendMessage(userId, `⚠️ المستخدم <code>${targetId}</code> غير محظور أصلاً.`, { parse_mode: 'HTML' });
+                } else {
+                    banned = banned.filter(id => id !== targetId);
+                    await setBannedUsers(banned);
+                    await bot.sendMessage(userId, `✅ تم رفع الحظر عن المستخدم <code>${targetId}</code>.`, { parse_mode: 'HTML' });
+                }
+                return res.status(200).send('Unbanned');
+            }
+
+            // ✨ [53.0] عرض قائمة كل المستخدمين المحظورين حالياً
+            if (text === '/banlist') {
+                const banned = await getBannedUsers();
+                if (banned.length === 0) {
+                    await bot.sendMessage(userId, '📭 لا يوجد أي مستخدم محظور حالياً.');
+                } else {
+                    const list = banned.map((id, i) => `${i + 1}. <code>${id}</code>`).join('\n');
+                    await bot.sendMessage(userId, `🚫 <b>المستخدمون المحظورون (${banned.length}):</b>\n\n${list}`, { parse_mode: 'HTML' });
+                }
+                return res.status(200).send('BanList');
+            }
         }
 
-        // 🚧 التحقق من الصيانة
-        if (global.isMaintenanceMode && userId !== ADMIN_CHAT_ID) {
+        // 🚫 [53.0] التحقق من الحظر — يُطبَّق على أي تفاعل (رسالة أو زر) من مستخدم غير
+        // الأدمن، قبل أي معالجة أخرى، وقبل حتى فحص وضع الصيانة.
+        if (userId && userId !== ADMIN_CHAT_ID) {
+            const bannedNow = await isUserBanned(userId);
+            if (bannedNow) {
+                if (msg) await bot.sendMessage(msg.chat.id, '🚫 <b>تم حظرك من استخدام هذا البوت.</b>', { parse_mode: 'HTML' });
+                else if (cb) await bot.answerCallbackQuery(cb.id, { text: '🚫 أنت محظور من استخدام البوت.', show_alert: true });
+                return res.status(200).send('Banned User');
+            }
+        }
+
+        // 🚧 [53.0] التحقق من الصيانة — بيُقرأ الآن من Supabase على كل طلب (بدل متغير
+        // عام global.* اللي مش موثوق فيه على Vercel لأن كل استدعاء ممكن يشتغل على
+        // instance مختلفة تماماً، فكان ممكن /repairon ميتطبقش فعلياً على كل المستخدمين).
+        const maintenanceOn = await getMaintenanceMode();
+        if (maintenanceOn && userId !== ADMIN_CHAT_ID) {
              if (msg) await bot.sendMessage(msg.chat.id, '⚠️ <b>عذراً، البوت في وضع الصيانة حالياً.</b>\nسنعود للعمل قريباً.', {parse_mode: 'HTML'});
              else if (cb) await bot.answerCallbackQuery(cb.id, { text: '⚠️ الصيانة مفعلة.', show_alert: true });
              return res.status(200).send('Maintenance');
@@ -608,7 +726,9 @@ module.exports = async (req, res) => {
                 `📚 <b>أرسل لي ملف PDF أو Word أو صورة، وسأسألك هل تريد استخراج الأسئلة الموجودة فيه أو إنشاء أسئلة جديدة بالذكاء الاصطناعي.</b>\n\n` +
                 `📝 أو استخدم الأمر /text لتحويل نص (تكتبه أو تلصقه) إلى أسئلة مباشرة.\n\n` +
                 `📄 أو استخدم الأمر /quizpdf لتجميع كويزات محلولة (Quiz Polls) وتحويلها لملف PDF مراجعة.\n\n` +
-                `🔑 <b>جديد:</b> أضف مفتاح Gemini API الخاص بك (مجاني) عبر /addkey ليستخدمه البوت أولاً ويقلل رسائل "السيرفر مشغول"، وهو <b>مطلوب</b> لميزة "إنشاء أسئلة بالذكاء الاصطناعي". كل مفتاح يمنحك ما يقارب ${APPROX_ANALYSES_PER_KEY} تحليل إضافي يومياً، ويمكنك إضافة أي عدد من المفاتيح. استخدم /mykeys لعرض مفاتيحك و /removekey لحذفها.`;
+                `🔑 <b>جديد:</b> أضف مفتاح Gemini API الخاص بك (مجاني) عبر /addkey. ` +
+                `ميزة "إنشاء أسئلة بالذكاء الاصطناعي" <b>تتطلب ${MIN_USER_KEYS_FOR_GENERATE} مفاتيح على الأقل</b> من مفاتيحك الخاصة. ` +
+                `كل مفتاح يمنحك ما يقارب ${APPROX_ANALYSES_PER_KEY} تحليل إضافي يومياً، ويمكنك إضافة أي عدد من المفاتيح. استخدم /mykeys لعرض مفاتيحك و /removekey لحذفها.`;
             await bot.sendMessage(chatId, welcomeText, { parse_mode: 'HTML' });
             await checkAndSendAlert(chatId, fromUser);
             return res.status(200).send('Start');
@@ -669,9 +789,9 @@ module.exports = async (req, res) => {
             const instructions =
 `🔑 <b>أضف مفتاح Gemini API الخاص بك (مجاني)</b>
 
-سيستخدم البوت مفتاحك الخاص أولاً قبل المفاتيح العامة المشتركة في وضع "استخراج الأسئلة"، وهو <b>مطلوب إجبارياً</b> لميزة "إنشاء أسئلة بالذكاء الاصطناعي" من محتوى الملف.
+سيستخدم البوت مفتاحك الخاص حصرياً في ميزة "إنشاء أسئلة بالذكاء الاصطناعي" من محتوى الملف (وهي ميزة <b>تتطلب ${MIN_USER_KEYS_FOR_GENERATE} مفاتيح خاصة بك على الأقل</b>). أما وضع "استخراج الأسئلة الموجودة" فيستخدم مفاتيح البوت العامة دائماً ولا يحتاج مفتاحك.
 
-📈 كل مفتاح جديد تضيفه يمنحك تقريباً <b>${APPROX_ANALYSES_PER_KEY} تحليل ملف/نص/صورة إضافي يومياً</b> شبه مضمون، فوق المفاتيح المشتركة. ويمكنك إضافة أي عدد تريده من المفاتيح لزيادة هذا الرصيد أكثر.
+📈 كل مفتاح جديد تضيفه يمنحك تقريباً <b>${APPROX_ANALYSES_PER_KEY} تحليل ملف/نص/صورة إضافي يومياً</b> ضمن ميزة "إنشاء أسئلة بالذكاء الاصطناعي". ويمكنك إضافة أي عدد تريده من المفاتيح لزيادة هذا الرصيد أكثر.
 
 <b>خطوات الحصول على المفتاح:</b>
 1️⃣ افتح الرابط: https://aistudio.google.com/apikey
@@ -680,6 +800,7 @@ module.exports = async (req, res) => {
 4️⃣ اختر <b>"Create API key in new project"</b> (أو مشروع Google Cloud موجود لديك).
 5️⃣ انسخ المفتاح الذي سيظهر (يبدأ عادة بـ <code>AQ...</code>).
 6️⃣ الصق المفتاح هنا في هذه المحادثة مباشرة كرسالة نصية.
+7️⃣ كرر الخطوات لإضافة مفتاح ثانٍ على الأقل (${MIN_USER_KEYS_FOR_GENERATE} مفاتيح مطلوبة لميزة الإنشاء بالذكاء الاصطناعي).
 
 ⚠️ <b>تنبيهات مهمة:</b>
 • المفتاح مجاني بالكامل ضمن الحد اليومي المجاني (Free Tier) من Google.
@@ -691,9 +812,9 @@ module.exports = async (req, res) => {
 
 🔑 <b>Add your own Gemini API key (it's free)</b>
 
-The bot will try your own key first before the shared/public ones for "extract" mode, and it's <b>required</b> for the "AI-generate questions" feature.
+The bot will use your own key(s) exclusively for the "AI-generate questions" feature, which requires <b>at least ${MIN_USER_KEYS_FOR_GENERATE} of your own keys</b>. The "extract existing questions" mode always uses the bot's shared public keys and never needs your key.
 
-📈 Each key you add gives you roughly <b>${APPROX_ANALYSES_PER_KEY} extra file/text/image analyses per day</b> that are reliably yours, on top of the shared pool. You can add as many keys as you like to increase this further.
+📈 Each key you add gives you roughly <b>${APPROX_ANALYSES_PER_KEY} extra file/text/image analyses per day</b> for the AI-generate feature. You can add as many keys as you like to increase this further.
 
 <b>Steps to get your key:</b>
 1️⃣ Open: https://aistudio.google.com/apikey
@@ -702,6 +823,7 @@ The bot will try your own key first before the shared/public ones for "extract" 
 4️⃣ Choose <b>"Create API key in new project"</b> (or an existing Google Cloud project).
 5️⃣ Copy the key that appears (it usually starts with <code>AIza...</code>).
 6️⃣ Paste the key here in this chat as a plain text message.
+7️⃣ Repeat to add at least a second key (${MIN_USER_KEYS_FOR_GENERATE} keys are required for the AI-generate feature).
 
 ⚠️ <b>Important notes:</b>
 • The key is completely free within Google's daily free tier.
@@ -728,8 +850,8 @@ The bot will try your own key first before the shared/public ones for "extract" 
 
             if (keys.length === 0) {
                 await bot.sendMessage(chatId,
-                    `📭 لا تملك أي مفاتيح API مضافة حالياً.\nاستخدم /addkey لإضافة مفتاحك الخاص (مجاني).\n\n` +
-                    `📭 You have no API keys added yet.\nUse /addkey to add your own free key.`
+                    `📭 لا تملك أي مفاتيح API مضافة حالياً.\nاستخدم /addkey لإضافة مفتاحك الخاص (مجاني). تحتاج ${MIN_USER_KEYS_FOR_GENERATE} على الأقل لاستخدام ميزة "إنشاء أسئلة بالذكاء الاصطناعي".\n\n` +
+                    `📭 You have no API keys added yet.\nUse /addkey to add your own free key. You need at least ${MIN_USER_KEYS_FOR_GENERATE} for the AI-generate feature.`
                 );
                 return res.status(200).send('No Keys');
             }
@@ -739,9 +861,14 @@ The bot will try your own key first before the shared/public ones for "extract" 
                 return `${i + 1}. <code>${maskApiKey(k.api_key)}</code> — ${addedDate}`;
             }).join('\n');
 
+            const genStatus = keys.length >= MIN_USER_KEYS_FOR_GENERATE
+                ? `✅ مفعّل لديك ميزة "إنشاء أسئلة بالذكاء الاصطناعي" (${keys.length}/${MIN_USER_KEYS_FOR_GENERATE}).`
+                : `⚠️ تحتاج ${MIN_USER_KEYS_FOR_GENERATE - keys.length} مفتاح إضافي على الأقل لتفعيل ميزة "إنشاء أسئلة بالذكاء الاصطناعي" (${keys.length}/${MIN_USER_KEYS_FOR_GENERATE}).`;
+
             await bot.sendMessage(chatId,
                 `🔑 <b>مفاتيحك المضافة (${keys.length}):</b>\n\n${list}\n\n` +
-                `📈 كل مفتاح يمنحك ~${APPROX_ANALYSES_PER_KEY} تحليل إضافي يومياً.\n\n` +
+                `${genStatus}\n\n` +
+                `📈 كل مفتاح يمنحك ~${APPROX_ANALYSES_PER_KEY} تحليل إضافي يومياً لميزة الإنشاء بالذكاء الاصطناعي.\n\n` +
                 `➕ /addkey لإضافة مفتاح جديد (بدون حد أقصى)\n🗑 /removekey لحذف مفتاح`,
                 { parse_mode: 'HTML' }
             );
@@ -803,7 +930,7 @@ The bot will try your own key first before the shared/public ones for "extract" 
             await bot.sendMessage(chatId,
                 `📄 <b>كيف تريد التعامل مع هذا الملف؟</b>\n\n` +
                 `📤 <b>استخراج الأسئلة الموجودة:</b> يسحب البوت الأسئلة الموجودة فعلياً في الملف مع إجاباتها المحددة (تظليل/علامة/جدول إجابات).\n\n` +
-                `🤖 <b>إنشاء أسئلة بالذكاء الاصطناعي:</b> يقرأ البوت محتوى الملف وينشئ أسئلة اختيار من متعدد جديدة بنفسه ويحدد إجاباتها من نفس المحتوى (يتطلب مفتاح Gemini API خاص بك).`,
+                `🤖 <b>إنشاء أسئلة بالذكاء الاصطناعي:</b> يقرأ البوت محتوى الملف وينشئ أسئلة اختيار من متعدد جديدة بنفسه ويحدد إجاباتها من نفس المحتوى (يتطلب ${MIN_USER_KEYS_FOR_GENERATE} مفاتيح Gemini API خاصة بك على الأقل).`,
                 {
                     parse_mode: 'HTML',
                     reply_markup: { inline_keyboard: [
@@ -839,7 +966,7 @@ The bot will try your own key first before the shared/public ones for "extract" 
             await bot.sendMessage(chatId,
                 `🖼️ <b>كيف تريد التعامل مع هذه الصورة؟</b>\n\n` +
                 `📤 <b>استخراج الأسئلة الموجودة:</b> يسحب البوت الأسئلة الموجودة فعلياً في الصورة مع إجاباتها المحددة.\n\n` +
-                `🤖 <b>إنشاء أسئلة بالذكاء الاصطناعي:</b> يقرأ البوت محتوى الصورة وينشئ أسئلة اختيار من متعدد جديدة بنفسه ويحدد إجاباتها (يتطلب مفتاح Gemini API خاص بك).`,
+                `🤖 <b>إنشاء أسئلة بالذكاء الاصطناعي:</b> يقرأ البوت محتوى الصورة وينشئ أسئلة اختيار من متعدد جديدة بنفسه ويحدد إجاباتها (يتطلب ${MIN_USER_KEYS_FOR_GENERATE} مفاتيح Gemini API خاصة بك على الأقل).`,
                 {
                     parse_mode: 'HTML',
                     reply_markup: { inline_keyboard: [
@@ -976,11 +1103,15 @@ The bot will try your own key first before the shared/public ones for "extract" 
                 }
 
                 const newCount = existingKeys.length + 1;
+                const genNote = newCount >= MIN_USER_KEYS_FOR_GENERATE
+                    ? `\n\n🤖 ميزة "إنشاء أسئلة بالذكاء الاصطناعي" أصبحت متاحة لك الآن (${newCount}/${MIN_USER_KEYS_FOR_GENERATE}).`
+                    : `\n\n⚠️ تحتاج ${MIN_USER_KEYS_FOR_GENERATE - newCount} مفتاح إضافي على الأقل لتفعيل ميزة "إنشاء أسئلة بالذكاء الاصطناعي" (${newCount}/${MIN_USER_KEYS_FOR_GENERATE}).`;
+
                 await bot.editMessageText(
                     `✅ <b>تم إضافة مفتاحك بنجاح!</b> (<code>${maskApiKey(candidateKey)}</code>)\n` +
-                    `سيستخدمه البوت أولاً قبل المفاتيح العامة. لديك الآن ${newCount} مفاتيح، بما يقارب ${newCount * APPROX_ANALYSES_PER_KEY} تحليل إضافي يومياً.\n\n` +
+                    `لديك الآن ${newCount} مفاتيح، بما يقارب ${newCount * APPROX_ANALYSES_PER_KEY} تحليل إضافي يومياً لميزة الإنشاء بالذكاء الاصطناعي.${genNote}\n\n` +
                     `✅ <b>Key added successfully!</b> (<code>${maskApiKey(candidateKey)}</code>)\n` +
-                    `The bot will use it first, before the public keys. You now have ${newCount} keys, roughly ${newCount * APPROX_ANALYSES_PER_KEY} extra analyses/day.`,
+                    `You now have ${newCount} keys, roughly ${newCount * APPROX_ANALYSES_PER_KEY} extra AI-generate analyses/day.`,
                     { chat_id: chatId, message_id: waitMsg.message_id, parse_mode: 'HTML' }
                 );
                 return res.status(200).send('Key Added');
@@ -1209,7 +1340,7 @@ The bot will try your own key first before the shared/public ones for "extract" 
                 );
             }
 
-            // 🤖 اختيار وضع "إنشاء أسئلة بالذكاء الاصطناعي" -> نتحقق من وجود مفتاح خاص أولاً
+            // 🤖 اختيار وضع "إنشاء أسئلة بالذكاء الاصطناعي" -> نتحقق من وجود مفاتيح خاصة كافية أولاً
             else if (data === 'cmd_filemode_generate') {
                 const pending = await getPendingFile(userId);
                 if (!pending || !pending.fileId) {
@@ -1217,13 +1348,16 @@ The bot will try your own key first before the shared/public ones for "extract" 
                     return res.status(200).send('OK');
                 }
 
+                // ✨ [53.0] يتطلب الآن MIN_USER_KEYS_FOR_GENERATE مفتاح على الأقل (وليس
+                // مفتاحاً واحداً فقط كما كان سابقاً).
                 const userKeys = await getUserApiKeysList(userId);
-                if (userKeys.length === 0) {
+                if (userKeys.length < MIN_USER_KEYS_FOR_GENERATE) {
                     await clearPendingFile(userId);
-                    await bot.answerCallbackQuery(cb.id, { text: '🔑 تحتاج مفتاح Gemini خاص أولاً.', show_alert: true });
+                    await bot.answerCallbackQuery(cb.id, { text: `🔑 تحتاج ${MIN_USER_KEYS_FOR_GENERATE} مفاتيح Gemini على الأقل.`, show_alert: true });
                     await bot.editMessageText(
-                        `🔑 <b>ميزة "إنشاء أسئلة بالذكاء الاصطناعي" تتطلب إضافة مفتاح Gemini API الخاص بك أولاً (مجاني).</b>\n\n` +
-                        `استخدم الأمر /addkey لإضافة مفتاحك، ثم أعد إرسال الملف مرة أخرى.`,
+                        `🔑 <b>ميزة "إنشاء أسئلة بالذكاء الاصطناعي" تتطلب إضافة ${MIN_USER_KEYS_FOR_GENERATE} مفاتيح Gemini API على الأقل الخاصة بك (مجانية).</b>\n\n` +
+                        `لديك حالياً <code>${userKeys.length}</code> من ${MIN_USER_KEYS_FOR_GENERATE} مفاتيح مطلوبة.\n` +
+                        `استخدم الأمر /addkey لإضافة مفتاح إضافي، ثم أعد إرسال الملف مرة أخرى.`,
                         { chat_id: chatId, message_id: messageId, parse_mode: 'HTML' }
                     );
                     return res.status(200).send('OK');
