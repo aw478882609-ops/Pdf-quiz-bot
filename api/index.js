@@ -72,7 +72,7 @@ const APPROX_ANALYSES_PER_KEY = 20;
 // ✨ [52.0] حدود عدد الأسئلة القابل لطلبه في وضع "إنشاء بالذكاء الاصطناعي" (يطابق
 // الحدود المطبّقة فعلياً داخل GAS: Math.max(1, Math.min(50, ...))).
 const MIN_GENERATE_COUNT = 1;
-const MAX_GENERATE_COUNT = 50;
+const MAX_GENERATE_COUNT = 150;
 const DEFAULT_GENERATE_COUNT = 10;
 
 // ✨ [53.0] الحد الأدنى لعدد مفاتيح Gemini الخاصة بالمستخدم اللازمة قبل السماح له
