@@ -1,26 +1,31 @@
 // =========================================================
-// 🎮 Vercel Controller - Version 54.0 (Answer-Placement PDF Export + Admin Choice Notifications + Anti-Spam Buffers)
+// 🎮 Vercel Controller - Version 55.0 (Consolidated Admin Reports + Reusable Sessions)
 // Features: Detailed Admin Help | HTML Escaping | Spoiler Mode | Text-to-Quiz | Image-to-Quiz | Doc-to-Quiz | Broadcast | Quiz-to-PDF | User API Keys | Extract/Generate Mode Picker | Ban System
 //
-// 🩹 CHANGELOG vs 53.0:
-// 1) FIXED SPAM: /quizpdf poll collection and /text part collection used to
-//    send a brand-new "✅ added / ✏️ received part" message for every single
-//    forwarded quiz or text chunk — forwarding 100 quizzes meant 100 new
-//    messages. Both now edit the SAME prompt message in place
-//    (bot.editMessageText) instead, falling back to a fresh message only if
-//    the edit fails (e.g. original message was deleted).
-// 2) NEW: Answer-placement choice for PDF exports. Both /quizpdf (manually
-//    collected solved polls) and the "send as PDF" option for
-//    extracted/generated question sessions now ask the user whether answers
-//    should appear "بعد كل سؤال" (inline, right after each question) or
-//    "في نهاية الملف" (grouped in an answer-key page at the end), and pass
-//    `answerPlacement` ('inline' | 'end') through to GAS.
-// 3) NEW: notifyAdminChoice() helper + admin notifications for user choices
-//    (file mode extract/generate, section-titles yes/no, question count,
-//    custom prompt, send mode, PDF answer placement). Never notifies when
-//    the admin himself is the actor.
+// 🩹 CHANGELOG vs 54.0:
+// 1) FIXED SPAM (admin side): Every intermediate user choice (file mode,
+//    section-titles yes/no, question count, custom prompt, send mode, PDF
+//    answer placement) used to trigger its own separate notifyAdminChoice()
+//    message to the admin — meaning a single file could produce 4-5 admin
+//    messages before the actual result was even ready. All of these choices
+//    are now accumulated silently into a per-session `choicesLog` array and
+//    forwarded to GAS, which folds them into the ONE final success/failure
+//    report it already sends after analysis/generation/sending/PDF-creation
+//    completes. notifyAdminChoice() calls have been removed from every
+//    intermediate step.
+// 2) NEW: after sending questions as Polls (execute_send) finishes, the
+//    session is no longer deleted immediately — the user is now offered a
+//    "📄 إرسال كملف PDF" button to export the SAME questions to PDF without
+//    re-uploading/re-analyzing the file, plus a "✅ إنهاء الجلسة" button to
+//    delete the temporary data whenever they're done.
+// 3) NEW: symmetrically, after creating a PDF from an analysis session
+//    (generate_pdf_from_session) finishes, the user is now offered the same
+//    "📤 إرسال فقط / ⚡ إرسال وحل فوري / 📝 إرسال كنص (مشوش)" buttons to also
+//    send the same questions as Polls, plus "✅ إنهاء الجلسة".
+// 4) NEW callback handler `cmd_session_end|<sessionKey>` — deletes the
+//    temporary session data (bot_config row) directly from Supabase.
 //
-// 🩹 CHANGELOG vs 52.0:
+// 🩹 CHANGELOG vs 53.0:
 // 1) FIXED: Maintenance mode ("وضع الصيانة") used to live in an in-memory
 //    `global.isMaintenanceMode` variable. On Vercel this is NOT reliable:
 //    serverless functions can spin up fresh instances at any time (cold
@@ -164,19 +169,6 @@ function smartJoinParts(parts) {
 function maskApiKey(key) {
     if (!key || key.length < 10) return '****';
     return `${key.slice(0, 6)}...${key.slice(-4)}`;
-}
-
-// ✨ [54.0] يبعث إشعار مختصر للأدمن بأي اختيار مهم يعمله المستخدم (وضع الملف،
-// عدد الأسئلة، مكان الإجابات في PDF...). بيتجاهل الإشعار لو الفاعل هو الأدمن
-// نفسه (عشان منمنعش سبام لنفسه).
-async function notifyAdminChoice(text, userId, userName) {
-    if (!ADMIN_CHAT_ID || userId === ADMIN_CHAT_ID) return;
-    try {
-        await bot.sendMessage(ADMIN_CHAT_ID,
-            `${text}\n👤 <b>${escapeHtml(userName || 'Unknown')}</b> (<code>${userId}</code>)`,
-            { parse_mode: 'HTML' }
-        );
-    } catch (e) { console.error('❌ Admin Choice Notify Error:', e.message); }
 }
 
 // =========================================================
@@ -481,7 +473,8 @@ async function sendToGasAndForget(payload) {
 //   - الوضع (extract أو generate)
 //   - extractTitles (لو extract) أو questionCount + customPrompt (لو generate)
 // pending يحتوي على: fileId, fileName, mimeType, sourceType, isImage,
-// userName, userUsername, mode, extractTitles, questionCount, customPrompt
+// userName, userUsername, mode, extractTitles, questionCount, customPrompt,
+// choicesLog (سجل اختيارات المستخدم اللي هيتضم في تقرير الأدمن النهائي الواحد)
 async function startFileAnalysis(userId, fromUser, chatId, messageId, pending) {
     const isImage = !!pending.isImage;
     const isGen = pending.mode === 'generate';
@@ -510,13 +503,16 @@ async function startFileAnalysis(userId, fromUser, chatId, messageId, pending) {
         // ✨ mode/extractTitles/customPrompt/questionCount بيوصلوا لـ GAS اللي بيقرر
         // بناءً عليهم يستخدم مفاتيح المستخدم فقط (وضع generate) أو المفاتيح العامة
         // فقط (وضع extract)، وبيبني البرومبت المناسب.
+        // ✨ [55.0] adminChoicesLog بيوصل كمان لـ GAS عشان يضمّه في تقرير النجاح/الفشل
+        // النهائي الواحد بدل ما يبعت رسالة أدمن منفصلة لكل اختيار وسطي.
         const payload = {
             action: isImage ? 'analyze_image_async' : 'analyze_async',
             fileUrl: fileLink, chatId: chatId, messageId: messageId,
             userId: userId, userName: pending.userName, userUsername: pending.userUsername,
             fileId: pending.fileId, fileName: pending.fileName, mimeType: pending.mimeType, logId: logId,
             sourceType: pending.sourceType,
-            mode: isGen ? 'generate' : 'extract'
+            mode: isGen ? 'generate' : 'extract',
+            adminChoicesLog: pending.choicesLog || []
         };
 
         if (isGen) {
@@ -955,7 +951,7 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
             await clearPendingFile(userId);
             await setPendingFile(userId, {
                 fileId, fileName, mimeType: docMimeType, sourceType: 'document', isImage,
-                userName, userUsername: fromUser.username, step: 'choose_mode'
+                userName, userUsername: fromUser.username, step: 'choose_mode', choicesLog: []
             });
 
             await bot.sendMessage(chatId,
@@ -991,7 +987,7 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
             await clearPendingFile(userId);
             await setPendingFile(userId, {
                 fileId, fileName, mimeType, sourceType: 'photo', isImage: true,
-                userName, userUsername: fromUser.username, step: 'choose_mode'
+                userName, userUsername: fromUser.username, step: 'choose_mode', choicesLog: []
             });
 
             await bot.sendMessage(chatId,
@@ -1165,9 +1161,9 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
 
                 pendingFileState.questionCount = Math.max(MIN_GENERATE_COUNT, Math.min(MAX_GENERATE_COUNT, n));
                 pendingFileState.step = 'ask_prompt';
+                pendingFileState.choicesLog = pendingFileState.choicesLog || [];
+                pendingFileState.choicesLog.push(`🔢 Custom question count: ${pendingFileState.questionCount}`);
                 await setPendingFile(userId, pendingFileState);
-
-                await notifyAdminChoice(`🔢 اختار عدد مخصص: ${pendingFileState.questionCount} سؤال.`, userId, pendingFileState.userName);
 
                 await bot.sendMessage(chatId,
                     `✏️ <b>عدد الأسئلة: ${pendingFileState.questionCount}</b>\n\n` +
@@ -1183,9 +1179,9 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                 const customPrompt = (raw.toLowerCase() === 'skip' || raw === 'تخطي') ? '' : raw;
 
                 pendingFileState.customPrompt = customPrompt;
+                pendingFileState.choicesLog = pendingFileState.choicesLog || [];
+                pendingFileState.choicesLog.push(`✏️ Extra instructions: ${customPrompt ? customPrompt.substring(0, 200) : '(none / skip)'}`);
                 await clearPendingFile(userId);
-
-                await notifyAdminChoice(`✏️ تعليمات إضافية: ${customPrompt ? escapeHtml(customPrompt.substring(0, 200)) : '(بدون / تخطي)'}`, userId, pendingFileState.userName);
 
                 const waitMsg = await bot.sendMessage(chatId, '⏳ <b>جاري البدء...</b>', { parse_mode: 'HTML' });
                 await startFileAnalysis(userId, fromUser, chatId, waitMsg.message_id, pendingFileState);
@@ -1351,8 +1347,6 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                     quizzes: ready.quizzes,
                     answerPlacement: answerPlacement
                 });
-
-                await notifyAdminChoice(`📄 <b>/quizpdf:</b> اختار وضع الإجابات "${placementLabel}" لملف من ${ready.quizzes.length} سؤال.`, userId, userName);
             }
 
             // ✨ [54.0] NEW — إلغاء بعد اختيار "إنشاء PDF" وقبل تحديد مكان الإجابات
@@ -1401,11 +1395,11 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
 
                 pending.mode = 'extract';
                 pending.step = 'choose_titles';
+                pending.choicesLog = pending.choicesLog || [];
+                pending.choicesLog.push('📤 Mode: Extract existing questions');
                 await setPendingFile(userId, pending);
 
                 await bot.answerCallbackQuery(cb.id);
-
-                await notifyAdminChoice(`📤 اختار وضع "استخراج أسئلة موجودة" لملف "${pending.fileName || pending.sourceType}".`, userId, pending.userName);
 
                 await bot.editMessageText(
                     '📌 هل تريد أن يستخرج البوت أيضاً عناوين الأقسام/الفصول (Section Titles) الموجودة في الملف؟',
@@ -1443,10 +1437,10 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                     return res.status(200).send('OK');
                 }
 
-                await notifyAdminChoice(`🤖 اختار وضع "إنشاء أسئلة بالذكاء الاصطناعي" لملف "${pending.fileName || pending.sourceType}" (لديه ${userKeys.length} مفاتيح).`, userId, pending.userName);
-
                 pending.mode = 'generate';
                 pending.step = 'ask_count';
+                pending.choicesLog = pending.choicesLog || [];
+                pending.choicesLog.push(`🤖 Mode: AI-generate questions (user has ${userKeys.length} keys)`);
                 await setPendingFile(userId, pending);
 
                 await bot.answerCallbackQuery(cb.id);
@@ -1472,8 +1466,8 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                 }
 
                 pending.extractTitles = (data === 'cmd_titles_yes');
-
-                await notifyAdminChoice(`📌 اختار ${pending.extractTitles ? 'استخراج عناوين الأقسام: نعم' : 'استخراج عناوين الأقسام: لا'}.`, userId, pending.userName);
+                pending.choicesLog = pending.choicesLog || [];
+                pending.choicesLog.push(`📌 Extract section titles: ${pending.extractTitles ? 'Yes' : 'No'}`);
 
                 await clearPendingFile(userId);
 
@@ -1491,8 +1485,8 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
 
                 const count = parseInt(data.replace('cmd_qcount_', ''), 10);
                 pending.questionCount = Math.max(MIN_GENERATE_COUNT, Math.min(MAX_GENERATE_COUNT, count));
-
-                await notifyAdminChoice(`🔢 اختار إنشاء ${pending.questionCount} سؤال.`, userId, pending.userName);
+                pending.choicesLog = pending.choicesLog || [];
+                pending.choicesLog.push(`🔢 Question count: ${pending.questionCount}`);
 
                 pending.step = 'ask_prompt';
                 await setPendingFile(userId, pending);
@@ -1529,6 +1523,15 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                 await clearPendingFile(userId);
                 await bot.answerCallbackQuery(cb.id, { text: '❌ تم الإلغاء.' });
                 await bot.editMessageText('❌ تم إلغاء معالجة الملف.', { chat_id: chatId, message_id: messageId });
+            }
+
+            // ✨ [55.0] NEW — إنهاء جلسة أسئلة (حذف البيانات المؤقتة من Supabase) بعد
+            // إتمام الإرسال أو إنشاء PDF، لو المستخدم مش محتاج يرجع يستخدمها تاني.
+            else if (data.startsWith('cmd_session_end|')) {
+                const sessionKeyToEnd = data.replace('cmd_session_end|', '');
+                await deleteBotConfig(sessionKeyToEnd);
+                await bot.answerCallbackQuery(cb.id, { text: '✅ تم الإنهاء.' });
+                await bot.editMessageText('✅ تم إنهاء الجلسة وحذف البيانات المؤقتة المرتبطة بها.', { chat_id: chatId, message_id: messageId });
             }
 
             // --- أزرار إرسال GAS ---
@@ -1572,10 +1575,6 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
 
                     await logUsage(userId, null, 'Quiz', count, model, 'success', 'quiz_send');
 
-                    const userNameForNotice = `${fromUser.first_name} ${fromUser.last_name || ''}`.trim();
-                    const sendModeLabel = spoilerMode ? 'نص مشوش 📝' : (closePolls ? 'Polls محلولة فوراً ⚡' : 'Polls 📤');
-                    await notifyAdminChoice(`📤 اختار إرسال ${count} سؤال بصيغة "${sendModeLabel}".`, userId, userNameForNotice);
-
                     // تمرير spoilerMode إلى GAS
                     await sendToGasAndForget({
                         action: 'execute_send',
@@ -1595,7 +1594,6 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                 const placement = pParts[1] === 'end' ? 'end' : 'inline';
                 const uniqueKey = pParts[2];
                 const count = pParts[3];
-                const placementLabel = placement === 'end' ? 'في نهاية الملف 🔐' : 'بعد كل سؤال ✅';
 
                 await bot.answerCallbackQuery(cb.id, { text: '🚀 جاري إنشاء الملف...' });
                 await bot.editMessageText(`⏳ <b>جاري إنشاء ملف PDF يحتوي على ${count} سؤال...</b>`, {
@@ -1614,8 +1612,6 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                     sessionKey: uniqueKey,
                     answerPlacement: placement
                 });
-
-                await notifyAdminChoice(`📄 اختار إرسال ${count} سؤال كملف PDF — وضع الإجابات: "${placementLabel}".`, userId, userName);
             }
 
             // ✨ تأكيد إرسال البرودكاست
