@@ -1,6 +1,14 @@
 // =========================================================
-// 🎮 Vercel Controller - Version 55.0 (Consolidated Admin Reports + Reusable Sessions)
+// 🎮 Vercel Controller - Version 56.0 (QuizPDF Long-Question Header Capture)
 // Features: Detailed Admin Help | HTML Escaping | Spoiler Mode | Text-to-Quiz | Image-to-Quiz | Doc-to-Quiz | Broadcast | Quiz-to-PDF | User API Keys | Extract/Generate Mode Picker | Ban System
+//
+// 🩹 CHANGELOG vs 55.0:
+// 1) NEW: during an active /quizpdf collection session, a plain text message
+//    sent BEFORE a quiz poll (used to work around Telegram's ~300-char poll
+//    question limit) is no longer silently dropped. It's buffered as
+//    `pendingHeaders` on the session and automatically prepended to the
+//    question text of the very next forwarded quiz poll, so the full
+//    question ends up together in the generated PDF instead of being lost.
 //
 // 🩹 CHANGELOG vs 54.0:
 // 1) FIXED SPAM (admin side): Every intermediate user choice (file mode,
@@ -789,7 +797,7 @@ module.exports = async (req, res) => {
             const chatId = msg.chat.id;
 
             await clearQuizPdfBuffer(userId);
-            await setQuizPdfBuffer(userId, { active: true, quizzes: [], promptMsgId: null });
+            await setQuizPdfBuffer(userId, { active: true, quizzes: [], promptMsgId: null, pendingHeaders: [] });
 
             await bot.sendMessage(chatId,
                 `📄 <b>وضع تجميع الكويزات لملف PDF مراجعة</b>\n\n` +
@@ -1043,6 +1051,17 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                     return res.status(200).send('QuizPDF Buffer Full');
                 }
 
+                // ✨ [53.0] لو فيه نص محفوظ اتبعت قبل الكويز ده مباشرة (رأس/تكملة نص
+                // السؤال اللي المستخدم بعته منفصل لأن تيليجرام قص نص سؤال الـ poll)،
+                // بنلزقه قبل نص السؤال (المقصوص من تيليجرام) بدل ما يضيع.
+                if (qpdfBuffer.pendingHeaders && qpdfBuffer.pendingHeaders.length > 0) {
+                    const headerText = qpdfBuffer.pendingHeaders.join('\n').trim();
+                    if (headerText) {
+                        quizData.question = `${headerText}\n${quizData.question}`;
+                    }
+                    qpdfBuffer.pendingHeaders = [];
+                }
+
                 qpdfBuffer.quizzes.push(quizData);
 
                 // ✨ [54.0] تعديل نفس رسالة البرومبت بدل إرسال رسالة جديدة لكل كويز
@@ -1186,6 +1205,30 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                 const waitMsg = await bot.sendMessage(chatId, '⏳ <b>جاري البدء...</b>', { parse_mode: 'HTML' });
                 await startFileAnalysis(userId, fromUser, chatId, waitMsg.message_id, pendingFileState);
                 return res.status(200).send('Generate Prompt Received');
+            }
+
+            // ✨ [53.0] لو فيه جلسة /quizpdf نشطة وجت رسالة نص عادية (مش أمر) قبل أي
+            // كويز، فده على الأغلب "رأس/نص السؤال الكامل" اللي المستخدم بعته منفصل
+            // لأن تيليجرام بيقص نص سؤال الـ Poll لو كان طويل (حد 300 حرف تقريباً).
+            // بنخزنه مؤقتاً (pendingHeaders) وبنلزقه قبل نص السؤال بتاع أول كويز
+            // جاي بعده مباشرة، بدل ما يضيع أو يتجاهل.
+            const qpdfBufferForText = await getQuizPdfBuffer(userId);
+            if (qpdfBufferForText && qpdfBufferForText.active) {
+                qpdfBufferForText.pendingHeaders = qpdfBufferForText.pendingHeaders || [];
+                qpdfBufferForText.pendingHeaders.push(msg.text.trim());
+
+                // 📏 حماية بسيطة من التضخم لو المستخدم بعت نصوص كتير من غير كويز بعدها
+                if (qpdfBufferForText.pendingHeaders.join('\n').length > 2000) {
+                    qpdfBufferForText.pendingHeaders = [qpdfBufferForText.pendingHeaders[qpdfBufferForText.pendingHeaders.length - 1]];
+                }
+
+                await setQuizPdfBuffer(userId, qpdfBufferForText);
+
+                await bot.sendMessage(chatId,
+                    `📝 تم حفظ النص، وسيتم إلحاقه بنص السؤال القادم.\n` +
+                    `أرسل الآن الكويز (Poll) المرتبط به.`
+                );
+                return res.status(200).send('QuizPDF Header Buffered');
             }
 
             const buffer = await getTextBuffer(userId);
