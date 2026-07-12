@@ -1,6 +1,24 @@
 // =========================================================
-// 🎮 Vercel Controller - Version 53.0 (Persisted Maintenance Mode + Ban System + Min-Keys-for-Generate)
+// 🎮 Vercel Controller - Version 54.0 (Answer-Placement PDF Export + Admin Choice Notifications + Anti-Spam Buffers)
 // Features: Detailed Admin Help | HTML Escaping | Spoiler Mode | Text-to-Quiz | Image-to-Quiz | Doc-to-Quiz | Broadcast | Quiz-to-PDF | User API Keys | Extract/Generate Mode Picker | Ban System
+//
+// 🩹 CHANGELOG vs 53.0:
+// 1) FIXED SPAM: /quizpdf poll collection and /text part collection used to
+//    send a brand-new "✅ added / ✏️ received part" message for every single
+//    forwarded quiz or text chunk — forwarding 100 quizzes meant 100 new
+//    messages. Both now edit the SAME prompt message in place
+//    (bot.editMessageText) instead, falling back to a fresh message only if
+//    the edit fails (e.g. original message was deleted).
+// 2) NEW: Answer-placement choice for PDF exports. Both /quizpdf (manually
+//    collected solved polls) and the "send as PDF" option for
+//    extracted/generated question sessions now ask the user whether answers
+//    should appear "بعد كل سؤال" (inline, right after each question) or
+//    "في نهاية الملف" (grouped in an answer-key page at the end), and pass
+//    `answerPlacement` ('inline' | 'end') through to GAS.
+// 3) NEW: notifyAdminChoice() helper + admin notifications for user choices
+//    (file mode extract/generate, section-titles yes/no, question count,
+//    custom prompt, send mode, PDF answer placement). Never notifies when
+//    the admin himself is the actor.
 //
 // 🩹 CHANGELOG vs 52.0:
 // 1) FIXED: Maintenance mode ("وضع الصيانة") used to live in an in-memory
@@ -146,6 +164,19 @@ function smartJoinParts(parts) {
 function maskApiKey(key) {
     if (!key || key.length < 10) return '****';
     return `${key.slice(0, 6)}...${key.slice(-4)}`;
+}
+
+// ✨ [54.0] يبعث إشعار مختصر للأدمن بأي اختيار مهم يعمله المستخدم (وضع الملف،
+// عدد الأسئلة، مكان الإجابات في PDF...). بيتجاهل الإشعار لو الفاعل هو الأدمن
+// نفسه (عشان منمنعش سبام لنفسه).
+async function notifyAdminChoice(text, userId, userName) {
+    if (!ADMIN_CHAT_ID || userId === ADMIN_CHAT_ID) return;
+    try {
+        await bot.sendMessage(ADMIN_CHAT_ID,
+            `${text}\n👤 <b>${escapeHtml(userName || 'Unknown')}</b> (<code>${userId}</code>)`,
+            { parse_mode: 'HTML' }
+        );
+    } catch (e) { console.error('❌ Admin Choice Notify Error:', e.message); }
 }
 
 // =========================================================
@@ -1018,26 +1049,28 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
 
                 qpdfBuffer.quizzes.push(quizData);
 
-                // إخفاء أزرار البرومبت السابق لتفادي تكرار الأزرار على الشاشة
+                // ✨ [54.0] تعديل نفس رسالة البرومبت بدل إرسال رسالة جديدة لكل كويز
+                // (يصلح مشكلة "100 كويز = 100 رسالة" عند التوجيه الجماعي).
+                const qpdfText = `✅ تم إضافة السؤال (الإجمالي: <b>${qpdfBuffer.quizzes.length}</b>).\n` +
+                    `أرسل المزيد أو اضغط "📄 إنشاء PDF" للإنتهاء.`;
+                const qpdfKeyboard = { inline_keyboard: [
+                    [{ text: '📄 إنشاء PDF', callback_data: 'cmd_quizpdf_done' }],
+                    [{ text: '❌ إلغاء', callback_data: 'cmd_quizpdf_cancel' }]
+                ] };
+
                 if (qpdfBuffer.promptMsgId) {
                     try {
-                        await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: qpdfBuffer.promptMsgId });
-                    } catch (e) { /* تجاهل لو الرسالة اتمسحت أو مالهاش أزرار */ }
+                        await bot.editMessageText(qpdfText, { chat_id: chatId, message_id: qpdfBuffer.promptMsgId, parse_mode: 'HTML', reply_markup: qpdfKeyboard });
+                    } catch (e) {
+                        // الرسالة القديمة اتمسحت/قديمة جداً على التعديل -> ابعت وحدة جديدة كـ fallback فقط
+                        const fallbackMsg = await bot.sendMessage(chatId, qpdfText, { parse_mode: 'HTML', reply_markup: qpdfKeyboard });
+                        qpdfBuffer.promptMsgId = fallbackMsg.message_id;
+                    }
+                } else {
+                    const firstMsg = await bot.sendMessage(chatId, qpdfText, { parse_mode: 'HTML', reply_markup: qpdfKeyboard });
+                    qpdfBuffer.promptMsgId = firstMsg.message_id;
                 }
 
-                const promptMsg = await bot.sendMessage(chatId,
-                    `✅ تم إضافة السؤال (الإجمالي: <b>${qpdfBuffer.quizzes.length}</b>).\n` +
-                    `أرسل المزيد أو اضغط "📄 إنشاء PDF" للإنتهاء.`,
-                    {
-                        parse_mode: 'HTML',
-                        reply_markup: { inline_keyboard: [
-                            [{ text: '📄 إنشاء PDF', callback_data: 'cmd_quizpdf_done' }],
-                            [{ text: '❌ إلغاء', callback_data: 'cmd_quizpdf_cancel' }]
-                        ] }
-                    }
-                );
-
-                qpdfBuffer.promptMsgId = promptMsg.message_id;
                 await setQuizPdfBuffer(userId, qpdfBuffer);
                 return res.status(200).send('QuizPDF Item Added');
             }
@@ -1134,6 +1167,8 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                 pendingFileState.step = 'ask_prompt';
                 await setPendingFile(userId, pendingFileState);
 
+                await notifyAdminChoice(`🔢 اختار عدد مخصص: ${pendingFileState.questionCount} سؤال.`, userId, pendingFileState.userName);
+
                 await bot.sendMessage(chatId,
                     `✏️ <b>عدد الأسئلة: ${pendingFileState.questionCount}</b>\n\n` +
                     `اكتب الآن أي تعليمات إضافية تريدها للذكاء الاصطناعي (نوع الأسئلة، الصعوبة، اللغة، التركيز على موضوع معين...)، ` +
@@ -1149,6 +1184,8 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
 
                 pendingFileState.customPrompt = customPrompt;
                 await clearPendingFile(userId);
+
+                await notifyAdminChoice(`✏️ تعليمات إضافية: ${customPrompt ? escapeHtml(customPrompt.substring(0, 200)) : '(بدون / تخطي)'}`, userId, pendingFileState.userName);
 
                 const waitMsg = await bot.sendMessage(chatId, '⏳ <b>جاري البدء...</b>', { parse_mode: 'HTML' });
                 await startFileAnalysis(userId, fromUser, chatId, waitMsg.message_id, pendingFileState);
@@ -1175,28 +1212,29 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                 buffer.parts.push(msg.text);
                 const combinedLength = smartJoinParts(buffer.parts).length;
 
-                // إخفاء أزرار البرومبت السابق لتفادي تكرار الأزرار على الشاشة
+                // ✨ [54.0] تعديل نفس رسالة البرومبت بدل إرسال رسالة جديدة لكل جزء نص
+                // (يصلح مشكلة السبام عند إرسال نص طويل على عدة رسائل).
+                const textBufText = `✏️ تم استلام جزء (${msg.text.length} حرف) — الإجمالي: <b>${combinedLength}</b> حرف.\n` +
+                    `أرسل المزيد أو اضغط "تم" للاستخراج.`;
+                const textBufKeyboard = {
+                    inline_keyboard: [
+                        [{ text: '✅ تم - استخرج الأسئلة', callback_data: 'cmd_text_done' }],
+                        [{ text: '❌ إلغاء', callback_data: 'cmd_text_cancel' }]
+                    ]
+                };
+
                 if (buffer.promptMsgId) {
                     try {
-                        await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: buffer.promptMsgId });
-                    } catch (e) { /* تجاهل لو الرسالة اتمسحت أو مالهاش أزرار */ }
+                        await bot.editMessageText(textBufText, { chat_id: chatId, message_id: buffer.promptMsgId, parse_mode: 'HTML', reply_markup: textBufKeyboard });
+                    } catch (e) {
+                        const fallbackMsg = await bot.sendMessage(chatId, textBufText, { parse_mode: 'HTML', reply_markup: textBufKeyboard });
+                        buffer.promptMsgId = fallbackMsg.message_id;
+                    }
+                } else {
+                    const firstMsg = await bot.sendMessage(chatId, textBufText, { parse_mode: 'HTML', reply_markup: textBufKeyboard });
+                    buffer.promptMsgId = firstMsg.message_id;
                 }
 
-                const promptMsg = await bot.sendMessage(chatId,
-                    `✏️ تم استلام جزء (${msg.text.length} حرف) — الإجمالي: <b>${combinedLength}</b> حرف.\n` +
-                    `أرسل المزيد أو اضغط "تم" للاستخراج.`,
-                    {
-                        parse_mode: 'HTML',
-                        reply_markup: {
-                            inline_keyboard: [
-                                [{ text: '✅ تم - استخرج الأسئلة', callback_data: 'cmd_text_done' }],
-                                [{ text: '❌ إلغاء', callback_data: 'cmd_text_cancel' }]
-                            ]
-                        }
-                    }
-                );
-
-                buffer.promptMsgId = promptMsg.message_id;
                 await setTextBuffer(userId, buffer);
                 return res.status(200).send('Text Part Received');
             }
@@ -1256,24 +1294,53 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                 await bot.editMessageText('❌ تم إلغاء عملية تجميع الكويزات.', { chat_id: chatId, message_id: messageId });
             }
 
-            // إنهاء التجميع وطلب إنشاء ملف الـ PDF من GAS
+            // إنهاء التجميع -> [54.0] نسأل أولاً عن مكان الإجابات قبل إنشاء الملف
             else if (data === 'cmd_quizpdf_done') {
                 const qpdfBuffer = await getQuizPdfBuffer(userId);
-
                 if (!qpdfBuffer || !qpdfBuffer.active || !qpdfBuffer.quizzes || qpdfBuffer.quizzes.length === 0) {
                     await bot.answerCallbackQuery(cb.id, { text: '⚠️ لا توجد أسئلة محفوظة.', show_alert: true });
                     return res.status(200).send('OK');
                 }
 
-                const collectedQuizzes = qpdfBuffer.quizzes;
+                // ✨ [54.0] بدل التوليد الفوري: نخزن الأسئلة المجمّعة مؤقتاً في bot_config
+                // ونسأل المستخدم أولاً عن مكان الإجابات في الملف.
+                await setBotConfig(`quizpdf_ready_${userId}`, { quizzes: qpdfBuffer.quizzes });
                 await clearQuizPdfBuffer(userId);
 
+                await bot.answerCallbackQuery(cb.id);
+                await bot.editMessageText(
+                    `📍 <b>أين تريد وضع الإجابات في ملف الـ PDF؟</b>\n\n` +
+                    `✅ <b>بعد كل سؤال:</b> الإجابة تظهر مباشرة تحت كل سؤال (كما كان سابقاً).\n` +
+                    `🔐 <b>في نهاية الملف:</b> كل الإجابات مجمّعة في صفحة "نموذج إجابة" في آخر الملف.`,
+                    {
+                        chat_id: chatId, message_id: messageId, parse_mode: 'HTML',
+                        reply_markup: { inline_keyboard: [
+                            [{ text: '✅ بعد كل سؤال', callback_data: 'cmd_quizpdf_place_inline' }],
+                            [{ text: '🔐 في نهاية الملف', callback_data: 'cmd_quizpdf_place_end' }],
+                            [{ text: '❌ إلغاء', callback_data: 'cmd_quizpdf_cancel_ready' }]
+                        ] }
+                    }
+                );
+            }
+
+            // ✨ [54.0] NEW — تنفيذ اختيار مكان الإجابات لجلسة /quizpdf المجمّعة يدوياً
+            else if (data === 'cmd_quizpdf_place_inline' || data === 'cmd_quizpdf_place_end') {
+                const ready = await getBotConfig(`quizpdf_ready_${userId}`);
+                if (!ready || !ready.quizzes || ready.quizzes.length === 0) {
+                    await bot.answerCallbackQuery(cb.id, { text: '⚠️ انتهت صلاحية الجلسة، ابدأ من جديد بـ /quizpdf.', show_alert: true });
+                    return res.status(200).send('OK');
+                }
+
+                const answerPlacement = data === 'cmd_quizpdf_place_end' ? 'end' : 'inline';
+                await deleteBotConfig(`quizpdf_ready_${userId}`);
+
                 await bot.answerCallbackQuery(cb.id, { text: '🚀 جاري إنشاء الملف...' });
-                await bot.editMessageText(`⏳ <b>جاري إنشاء ملف PDF مراجعة يحتوي على ${collectedQuizzes.length} سؤال...</b>`, {
+                await bot.editMessageText(`⏳ <b>جاري إنشاء ملف PDF مراجعة يحتوي على ${ready.quizzes.length} سؤال...</b>`, {
                     chat_id: chatId, message_id: messageId, parse_mode: 'HTML'
                 });
 
                 const userName = `${fromUser.first_name} ${fromUser.last_name || ''}`.trim();
+                const placementLabel = answerPlacement === 'end' ? 'في نهاية الملف 🔐' : 'بعد كل سؤال ✅';
 
                 await sendToGasAndForget({
                     action: 'generate_quiz_pdf',
@@ -1281,8 +1348,18 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                     chatId: chatId,
                     userName: userName,
                     userUsername: fromUser.username,
-                    quizzes: collectedQuizzes
+                    quizzes: ready.quizzes,
+                    answerPlacement: answerPlacement
                 });
+
+                await notifyAdminChoice(`📄 <b>/quizpdf:</b> اختار وضع الإجابات "${placementLabel}" لملف من ${ready.quizzes.length} سؤال.`, userId, userName);
+            }
+
+            // ✨ [54.0] NEW — إلغاء بعد اختيار "إنشاء PDF" وقبل تحديد مكان الإجابات
+            else if (data === 'cmd_quizpdf_cancel_ready') {
+                await deleteBotConfig(`quizpdf_ready_${userId}`);
+                await bot.answerCallbackQuery(cb.id, { text: '❌ تم الإلغاء.' });
+                await bot.editMessageText('❌ تم إلغاء إنشاء الملف.', { chat_id: chatId, message_id: messageId });
             }
 
             // ✨ إلغاء وضع إضافة مفتاح API
@@ -1327,6 +1404,9 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                 await setPendingFile(userId, pending);
 
                 await bot.answerCallbackQuery(cb.id);
+
+                await notifyAdminChoice(`📤 اختار وضع "استخراج أسئلة موجودة" لملف "${pending.fileName || pending.sourceType}".`, userId, pending.userName);
+
                 await bot.editMessageText(
                     '📌 هل تريد أن يستخرج البوت أيضاً عناوين الأقسام/الفصول (Section Titles) الموجودة في الملف؟',
                     {
@@ -1363,6 +1443,8 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                     return res.status(200).send('OK');
                 }
 
+                await notifyAdminChoice(`🤖 اختار وضع "إنشاء أسئلة بالذكاء الاصطناعي" لملف "${pending.fileName || pending.sourceType}" (لديه ${userKeys.length} مفاتيح).`, userId, pending.userName);
+
                 pending.mode = 'generate';
                 pending.step = 'ask_count';
                 await setPendingFile(userId, pending);
@@ -1390,6 +1472,9 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                 }
 
                 pending.extractTitles = (data === 'cmd_titles_yes');
+
+                await notifyAdminChoice(`📌 اختار ${pending.extractTitles ? 'استخراج عناوين الأقسام: نعم' : 'استخراج عناوين الأقسام: لا'}.`, userId, pending.userName);
+
                 await clearPendingFile(userId);
 
                 await bot.answerCallbackQuery(cb.id, { text: '🚀 جاري البدء...' });
@@ -1406,6 +1491,9 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
 
                 const count = parseInt(data.replace('cmd_qcount_', ''), 10);
                 pending.questionCount = Math.max(MIN_GENERATE_COUNT, Math.min(MAX_GENERATE_COUNT, count));
+
+                await notifyAdminChoice(`🔢 اختار إنشاء ${pending.questionCount} سؤال.`, userId, pending.userName);
+
                 pending.step = 'ask_prompt';
                 await setPendingFile(userId, pending);
 
@@ -1454,6 +1542,25 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                 // ✅ التعرف على وضع النص المشوش (Spoiler)
                 const closePolls = targetRaw.includes('close');
                 const spoilerMode = targetRaw.includes('spoiler');
+                const asPdf = targetRaw.includes('pdf');
+
+                // ✨ [54.0] NEW — إرسال كملف PDF بدل Polls/نص: نسأل عن مكان الإجابات أولاً
+                if (asPdf) {
+                    await bot.answerCallbackQuery(cb.id);
+                    await bot.editMessageText(
+                        `📍 <b>أين تريد وضع الإجابات في ملف الـ PDF؟</b>\n\n` +
+                        `✅ <b>بعد كل سؤال:</b> الإجابة تظهر مباشرة تحت كل سؤال.\n` +
+                        `🔐 <b>في نهاية الملف:</b> كل الإجابات مجمّعة في صفحة "نموذج إجابة" في آخر الملف.`,
+                        {
+                            chat_id: chatId, message_id: messageId, parse_mode: 'HTML',
+                            reply_markup: { inline_keyboard: [
+                                [{ text: '✅ بعد كل سؤال', callback_data: `pdfp|inline|${uniqueKey}|${count}` }],
+                                [{ text: '🔐 في نهاية الملف', callback_data: `pdfp|end|${uniqueKey}|${count}` }]
+                            ] }
+                        }
+                    );
+                    return res.status(200).send('OK');
+                }
 
                 if (targetRaw.includes('here')) {
                     let modeText = "";
@@ -1464,6 +1571,10 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                     await bot.sendMessage(chatId, `⚡ <b>جاري إرسال ${count} سؤال...</b>`, {parse_mode: 'HTML'});
 
                     await logUsage(userId, null, 'Quiz', count, model, 'success', 'quiz_send');
+
+                    const userNameForNotice = `${fromUser.first_name} ${fromUser.last_name || ''}`.trim();
+                    const sendModeLabel = spoilerMode ? 'نص مشوش 📝' : (closePolls ? 'Polls محلولة فوراً ⚡' : 'Polls 📤');
+                    await notifyAdminChoice(`📤 اختار إرسال ${count} سؤال بصيغة "${sendModeLabel}".`, userId, userNameForNotice);
 
                     // تمرير spoilerMode إلى GAS
                     await sendToGasAndForget({
@@ -1476,6 +1587,35 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                         spoilerMode: spoilerMode
                     });
                 }
+            }
+
+            // ✨ [54.0] NEW — تنفيذ اختيار مكان الإجابات لإرسال جلسة أسئلة كملف PDF
+            else if (data.startsWith('pdfp|')) {
+                const pParts = data.split('|');
+                const placement = pParts[1] === 'end' ? 'end' : 'inline';
+                const uniqueKey = pParts[2];
+                const count = pParts[3];
+                const placementLabel = placement === 'end' ? 'في نهاية الملف 🔐' : 'بعد كل سؤال ✅';
+
+                await bot.answerCallbackQuery(cb.id, { text: '🚀 جاري إنشاء الملف...' });
+                await bot.editMessageText(`⏳ <b>جاري إنشاء ملف PDF يحتوي على ${count} سؤال...</b>`, {
+                    chat_id: chatId, message_id: messageId, parse_mode: 'HTML'
+                });
+
+                const userName = `${fromUser.first_name} ${fromUser.last_name || ''}`.trim();
+                await logUsage(userId, null, 'Quiz PDF', count, null, 'success', 'quiz_pdf_send');
+
+                await sendToGasAndForget({
+                    action: 'generate_pdf_from_session',
+                    userId: userId,
+                    chatId: chatId,
+                    userName: userName,
+                    userUsername: fromUser.username,
+                    sessionKey: uniqueKey,
+                    answerPlacement: placement
+                });
+
+                await notifyAdminChoice(`📄 اختار إرسال ${count} سؤال كملف PDF — وضع الإجابات: "${placementLabel}".`, userId, userName);
             }
 
             // ✨ تأكيد إرسال البرودكاست
