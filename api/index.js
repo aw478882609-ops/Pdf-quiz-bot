@@ -1,6 +1,19 @@
 // =========================================================
-// 🎮 Vercel Controller - Version 56.0 (QuizPDF Long-Question Header Capture)
-// Features: Detailed Admin Help | HTML Escaping | Spoiler Mode | Text-to-Quiz | Image-to-Quiz | Doc-to-Quiz | Broadcast | Quiz-to-PDF | User API Keys | Extract/Generate Mode Picker | Ban System
+// 🎮 Vercel Controller - Version 57.0 (Raw JSON Delivery)
+// Features: Detailed Admin Help | HTML Escaping | Spoiler Mode | Text-to-Quiz | Image-to-Quiz | Doc-to-Quiz | Broadcast | Quiz-to-PDF | Quiz-to-JSON | User API Keys | Extract/Generate Mode Picker | Ban System
+//
+// 🩹 CHANGELOG vs 56.0:
+// 1) NEW: a 5th delivery option, "📦 استلام كملف JSON خام" (callback suffix
+//    `|here_json`), sits alongside Polls / auto-solve / spoiler-text / PDF on
+//    every questions-ready keyboard (analysis success, post-send follow-up,
+//    post-PDF follow-up). Unlike the PDF option it needs no extra step (no
+//    answer-placement question) — it just asks GAS to dump the session's raw
+//    question objects (question/options/correctAnswerIndex/explanation, and
+//    sectionTitle when "extract titles" was enabled) straight into a .json
+//    file and send it as a Telegram document. New GAS action forwarded:
+//    `generate_json_from_session`. The `asJson` check is evaluated (and
+//    returns) BEFORE the generic `targetRaw.includes('here')` branch, since
+//    `here_json` also contains the substring `here`.
 //
 // 🩹 CHANGELOG vs 55.0:
 // 1) NEW: during an active /quizpdf collection session, a plain text message
@@ -1589,6 +1602,11 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                 const closePolls = targetRaw.includes('close');
                 const spoilerMode = targetRaw.includes('spoiler');
                 const asPdf = targetRaw.includes('pdf');
+                // ✨ [57.0] NEW — استلام نفس الأسئلة كملف JSON خام (بيانات الذكاء
+                // الاصطناعي كما هي، بما فيها sectionTitle لو تم طلب العناوين وقت
+                // التحليل)، بدل تحويلها Polls/نص/PDF. لازم يُفحص قبل الـ 'here' العام
+                // تحت، لأن 'here_json' بتحتوي على 'here' كـ substring برضه.
+                const asJson = targetRaw.includes('json');
 
                 // ✨ [54.0] NEW — إرسال كملف PDF بدل Polls/نص: نسأل عن مكان الإجابات أولاً
                 if (asPdf) {
@@ -1605,6 +1623,28 @@ The bot will use your own key(s) exclusively for the "AI-generate questions" fea
                             ] }
                         }
                     );
+                    return res.status(200).send('OK');
+                }
+
+                // ✨ [57.0] NEW — تنفيذ استلام ملف JSON خام مباشرة (مفيش خطوة وسيطة
+                // زي مكان الإجابات في الـ PDF، لأن الـ JSON بيحتوي على كل شيء أصلاً).
+                if (asJson) {
+                    await bot.answerCallbackQuery(cb.id, { text: '🚀 جاري تجهيز ملف JSON...' });
+                    await bot.editMessageText(`⏳ <b>جاري تجهيز ملف JSON يحتوي على ${count} سؤال...</b>`, {
+                        chat_id: chatId, message_id: messageId, parse_mode: 'HTML'
+                    });
+
+                    const userName = `${fromUser.first_name} ${fromUser.last_name || ''}`.trim();
+                    await logUsage(userId, null, 'Quiz JSON', count, null, 'success', 'quiz_json_send');
+
+                    await sendToGasAndForget({
+                        action: 'generate_json_from_session',
+                        userId: userId,
+                        chatId: chatId,
+                        userName: userName,
+                        userUsername: fromUser.username,
+                        sessionKey: uniqueKey
+                    });
                     return res.status(200).send('OK');
                 }
 
